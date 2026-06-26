@@ -18,6 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manual_schedule'
     $sessionDate = trim($_POST['session_date'] ?? '');
     $newDate = trim($_POST['new_date'] ?? '');
     $newSlot = trim($_POST['new_slot'] ?? '');
+    $newUserChanges = isset($_POST['new_user_id']) ? (int)$_POST['new_user_id'] : 0;
     $selectedWeekNumber = (int)($_POST['week_number'] ?? $currentWeekNumber);
     $selectedYear = (int)($_POST['week_year'] ?? $currentYear);
     $action = $_POST['save_manual_schedule'];
@@ -30,9 +31,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manual_schedule'
             $stmt->execute([$classId, $sessionDate, 'delete']);
             $message = "<p class='success'>✓ Đã bỏ buổi học này khỏi lịch và đẩy các buổi tiếp theo về sau.</p>";
         } elseif ($action === 'move' && $newDate !== '' && $newSlot !== '') {
-            $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, action_type) VALUES (?, ?, ?, ?, ?)');
-            $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, 'move']);
-            $message = "<p class='success'>✓ Đã đổi lịch cho buổi học này thành ngày/ca mới.</p>";
+            $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type) VALUES (?, ?, ?, ?, ?, ?)');
+            $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move']);
+            $message = "<p class='success'>✓ Đã đổi lịch và phân công người dạy thay cho ca thành công.</p>";
         } else {
             $message = "<p class='error'>⚠ Vui lòng nhập đầy đủ ngày và ca mới khi đổi lịch.</p>";
         }
@@ -45,6 +46,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manual_schedule'
 }
 
 $classes = $db->query("SELECT * FROM classes ORDER BY class_name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$usersList = $db->query("SELECT id, username, full_name FROM users WHERE status='active' ORDER BY full_name, username")->fetchAll(PDO::FETCH_ASSOC);
+
 $selectedClassId = (int)($_POST['class_id'] ?? $_GET['class_id'] ?? ($classes[0]['id'] ?? 0));
 $selectedClass = null;
 $overrideRows = [];
@@ -74,11 +77,7 @@ if ($selectedClassId > 0) {
         $temp = clone $weekStart;
         for ($i = 0; $i < 7; $i++) {
             $dateKey = $temp->format('Y-m-d');
-            $weekDates[] = [
-                'label' => $daysOfWeek[$i],
-                'date' => $dateKey,
-                'display' => $temp->format('d/m')
-            ];
+            $weekDates[] = [ 'label' => $daysOfWeek[$i], 'date' => $dateKey, 'display' => $temp->format('d/m') ];
             $weekEntries[$dateKey] = [];
             $temp->modify('+1 day');
         }
@@ -199,6 +198,7 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
                                     data-session-date="<?= htmlspecialchars($entry['original_date']) ?>"
                                     data-display-date="<?= htmlspecialchars($entry['display_date']) ?>"
                                     data-slot="<?= htmlspecialchars($entry['display_slot']) ?>"
+                                    data-user-id="<?= htmlspecialchars($entry['assigned_user_id']) ?>"
                                     data-class-name="<?= htmlspecialchars($selectedClass['class_name']) ?>">
                                     <strong><?= htmlspecialchars($selectedClass['class_name']) ?></strong><br>
                                     <span><?= htmlspecialchars($entry['display_slot']) ?></span>
@@ -238,6 +238,15 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
                         <?php endforeach; ?>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label>Giảng viên dạy thay (Tùy chọn)</label>
+                    <select name="new_user_id" id="modal-new-user">
+                        <option value="0">-- Giữ nguyên giảng viên gốc --</option>
+                        <?php foreach ($usersList as $u): ?>
+                            <option value="<?= $u['id'] ?>"><?= htmlspecialchars($u['full_name'] ?: $u['username']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top: 12px;">
                     <button type="submit" name="save_manual_schedule" value="move" class="btn">Đổi lịch buổi này</button>
                     <button type="submit" name="save_manual_schedule" value="delete" class="btn-delete">Bỏ buổi này</button>
@@ -251,39 +260,19 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
         const classSelect = document.getElementById('class_id');
         const weekInput = document.getElementById('week_number');
 
-        function submitFilter() {
-            if (filterForm) {
-                filterForm.submit();
-            }
-        }
+        function submitFilter() { if (filterForm) filterForm.submit(); }
+        if (classSelect) classSelect.addEventListener('change', submitFilter);
 
-        if (classSelect) {
-            classSelect.addEventListener('change', submitFilter);
-        }
-
-        if (weekInput) {
-            let timeoutId;
-            weekInput.addEventListener('change', () => {
-                clearTimeout(timeoutId);
-                timeoutId = setTimeout(submitFilter, 200);
-            });
-            weekInput.addEventListener('input', () => {
-                clearTimeout(timeoutId);
-                timeoutId = setTimeout(submitFilter, 200);
-            });
-        }
-
-        function openModal(classId, sessionDate, displayDate, slot, className) {
+        function openModal(classId, sessionDate, displayDate, slot, userId, className) {
             document.getElementById('modal-class-id').value = classId;
             document.getElementById('modal-session-date').value = sessionDate;
             document.getElementById('modal-title').innerText = 'Đổi lịch cho ' + className + ' · ' + displayDate + ' · ' + slot;
             document.getElementById('modal-new-date').value = displayDate;
+            document.getElementById('modal-new-user').value = userId;
             document.getElementById('manual-modal').style.display = 'flex';
         }
 
-        function closeModal() {
-            document.getElementById('manual-modal').style.display = 'none';
-        }
+        function closeModal() { document.getElementById('manual-modal').style.display = 'none'; }
 
         document.querySelectorAll('.session-pill').forEach(button => {
             button.addEventListener('click', () => {
@@ -292,6 +281,7 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
                     button.getAttribute('data-session-date'),
                     button.getAttribute('data-display-date'),
                     button.getAttribute('data-slot'),
+                    button.getAttribute('data-user-id') || "0",
                     button.getAttribute('data-class-name')
                 );
             });

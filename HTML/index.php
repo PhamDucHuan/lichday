@@ -9,6 +9,8 @@ if (!isset($_SESSION['user_id'])) {
     header('Location: ../PHP/login.php');
     exit;
 }
+// Thêm đoạn này xuống dưới khối kiểm tra đăng nhập (Khoảng dòng 11) để lấy danh sách giảng viên:
+$usersList = $db->query("SELECT id, username, full_name FROM users WHERE status='active' ORDER BY full_name, username")->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="vi">
@@ -48,15 +50,15 @@ if (!isset($_SESSION['user_id'])) {
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                     <strong id="panel-class-name"></strong>
                     <button type="button" class="btn-delete" onclick="closeActionPanel()" style="padding:4px 8px;">✕</button>
-                </div>
-                <form id="move-form" class="compact-form">
-                    <input type="hidden" id="panel-class-id" name="class_id">
-                    <input type="hidden" id="panel-session-date" name="session_date">
-                    <input type="hidden" name="action" value="move">
-                    <div class="form-group">
-                        <label>Ngày mới</label>
-                        <input type="date" id="panel-new-date" name="new_date" required>
-                    </div>
+                <div class="form-group">
+    <label>Giảng viên dạy thay (Tùy chọn)</label>
+    <select id="panel-new-user" name="new_user_id">
+        <option value="0">-- Giữ nguyên giảng viên gốc --</option>
+        <?php foreach ($usersList as $u): ?>
+            <option value="<?= $u['id'] ?>"><?= htmlspecialchars($u['full_name'] ?: $u['username']) ?></option>
+        <?php endforeach; ?>
+    </select>
+</div>
                     <div class="form-group">
                         <label>Ca mới</label>
                         <select id="panel-new-slot" name="new_slot" required>
@@ -89,8 +91,10 @@ if (!isset($_SESSION['user_id'])) {
 
         <div class="table-responsive">
             <table class="schedule-table">
-                <thead><tr id="table-header"></tr></thead>
-                <tbody><tr id="table-body"></tr></tbody>
+                <thead>
+                    <tr id="table-header"></tr>
+                </thead>
+                <tbody id="table-body"></tbody>
             </table>
         </div>
     </div>
@@ -99,6 +103,9 @@ if (!isset($_SESSION['user_id'])) {
         let currentWeekOffset = 0;
         let activeClassId = null;
         let activeSessionDate = null;
+
+        // Định nghĩa danh sách mã ca dạy chuẩn từ API để khớp dữ liệu dòng
+        const allowedSlots = ['S1', 'S2', 'C1', 'C2', 'T1', 'T2'];
 
         function openActionPanel(classId, className, sessionDate) {
             document.getElementById('panel-class-id').value = classId;
@@ -125,29 +132,48 @@ if (!isset($_SESSION['user_id'])) {
 
                 document.getElementById('current-week-text').innerText = 'Tuần: ' + data.monday + ' - ' + data.sunday;
 
+                // Tái cấu trúc Header: Cột đầu tiên là Cột Ca Dạy
                 const headerRow = document.getElementById('table-header');
-                headerRow.innerHTML = '';
+                headerRow.innerHTML = '<th style="background-color: #e2e8f0; font-weight: bold; width: 100px;">Ca / Ngày</th>';
                 data.dates.forEach(item => {
                     headerRow.innerHTML += '<th>' + item.day_name + '<small>' + item.date_formatted + '</small></th>';
                 });
 
-                const bodyRow = document.getElementById('table-body');
-                bodyRow.innerHTML = '';
-                data.dates.forEach(item => {
-                    let cellContent = '';
-                    if (data.schedule[item.date_raw] && data.schedule[item.date_raw].length > 0) {
-                        data.schedule[item.date_raw].forEach(session => {
-                            cellContent += `
-                                <div class="session-card" data-class-id="${session.class_id || ''}" style="cursor:pointer;" onclick="openActionPanel('${session.class_id || ''}', '${session.name.replace(/'/g, "\\'")}', '${item.date_raw}')">
-                                    <div class="class-name">${session.name}</div>
-                                    <div class="class-time">${session.time}</div>
-                                </div>`;
-                        });
-                    } else {
-                        cellContent = '<span class="empty-day">·</span>';
-                    }
-                    bodyRow.innerHTML += '<td>' + cellContent + '</td>';
+                // Tái cấu trúc Body: Lặp theo từng Ca (Dòng)
+                const bodyContainer = document.getElementById('table-body');
+                bodyContainer.innerHTML = '';
+
+                allowedSlots.forEach(slotCode => {
+                    let rowHtml = `<tr>`;
+                    // Cột trái đầu tiên hiển thị Tên Ca dạy
+                    rowHtml += `<td style="background-color: #f8fafc; font-weight: 600; text-align: center; vertical-align: middle; border-right: 2px solid var(--border-color); color: var(--primary);">Ca ${slotCode}</td>`;
+                    
+                    // Duyệt tiếp qua các ngày trong tuần của ca đó
+                    data.dates.forEach(item => {
+                        let cellContent = '';
+                        const daySessions = data.schedule[item.date_raw] || [];
+                        
+                        // Lọc các lớp thuộc đúng Ca này trong ngày hiện tại
+                        const matchedSessions = daySessions.filter(s => s.slot_code === slotCode);
+
+                        if (matchedSessions.length > 0) {
+                            matchedSessions.forEach(session => {
+                                cellContent += `
+                                    <div class="session-card" data-class-id="${session.class_id || ''}" style="cursor:pointer; margin-bottom: 6px;" onclick="openActionPanel('${session.class_id || ''}', '${session.name.replace(/'/g, "\\'")}', '${item.date_raw}')">
+                                        <div class="class-name">${session.name}</div>
+                                        <div class="class-time">${session.time}</div>
+                                    </div>`;
+                            });
+                        } else {
+                            cellContent = '<span class="empty-day">·</span>';
+                        }
+                        rowHtml += `<td>${cellContent}</td>`;
+                    });
+                    
+                    rowHtml += `</tr>`;
+                    bodyContainer.innerHTML += rowHtml;
                 });
+
             } catch (error) {
                 console.error('Lỗi:', error);
             }

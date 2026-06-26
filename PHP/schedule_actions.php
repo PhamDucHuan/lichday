@@ -33,11 +33,13 @@ if ($action === 'move') {
     $classId = (int)($_POST['class_id'] ?? 0);
     $newDate = trim($_POST['new_date'] ?? '');
     $newSlot = trim($_POST['new_slot'] ?? '');
+    $newUserChanges = isset($_POST['new_user_id']) ? (int)$_POST['new_user_id'] : 0;
     $sessionDate = trim($_POST['session_date'] ?? '');
+    
     if ($classId > 0 && $sessionDate !== '' && $newDate !== '' && $newSlot !== '') {
-        $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, action_type) VALUES (?, ?, ?, ?, ?)');
-        $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, 'move']);
-        echo json_encode(['success' => true, 'message' => 'Đã đổi lịch của ngày này']);
+        $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type) VALUES (?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move']);
+        echo json_encode(['success' => true, 'message' => 'Đã đổi lịch và cập nhật thông tin giảng viên dạy thay thành công']);
     } else {
         echo json_encode(['success' => false, 'message' => 'Thiếu thông tin']);
     }

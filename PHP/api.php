@@ -37,13 +37,14 @@ if (!$canView) {
     exit;
 }
 
-$stmt = $db->prepare("SELECT * FROM classes WHERE status = 'Active' AND (assigned_user_id IS NULL OR assigned_user_id = ?)");
-$stmt->execute([$view_user_id]);
-$classes = $stmt->fetchAll(PDO::FETCH_ASSOC);
-$overrideStmt = $db->query("SELECT class_id, override_date, new_date, new_slot, action_type FROM class_schedule_overrides");
+$stmt = $db->query("SELECT * FROM classes WHERE status = 'Active'");
+$classes = $stmt->fetchAll(PDO::FETCH_ASSOC);$stmt->execute([$view_user_id]);
+$overrideStmt = $db->query("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides");
 $overrides = $overrideStmt->fetchAll(PDO::FETCH_ASSOC);
 $weekSchedule = [];
 $monthPreview = [];
+$usersQuery = $db->query("SELECT id, username, full_name FROM users")->fetchAll(PDO::FETCH_ASSOC);
+$userMap = []; foreach ($usersQuery as $u) { $userMap[$u['id']] = $u['full_name'] ?: $u['username']; }
 $daysOfWeek = [1 => 'Thứ 2', 2 => 'Thứ 3', 3 => 'Thứ 4', 4 => 'Thứ 5', 5 => 'Thứ 6', 6 => 'Thứ 7', 0 => 'Chủ Nhật'];
 $datesStructure = [];
 $allowedSlots = ['S1', 'S2', 'C1', 'C2', 'T1', 'T2'];
@@ -58,6 +59,11 @@ for ($i = 0; $i < 7; $i++) {
 foreach ($classes as $class) {
     $effectiveSessions = buildClassSessionDates($class, $overrides);
     foreach ($effectiveSessions as $sessionInfo) {
+        // KIỂM TRA QUYỀN: Ca học này thuộc về ai (Gốc hoặc Dạy thay)? Nếu không phải target_user thì bỏ qua ca này
+        if ((int)$sessionInfo['assigned_user_id'] !== $view_user_id) {
+            continue;
+        }
+
         $displayDate = $sessionInfo['display_date'];
         $displaySlot = $sessionInfo['display_slot'];
 
@@ -77,9 +83,23 @@ foreach ($classes as $class) {
                 break;
             }
         }
-        $weekSchedule[$displayDate][] = ['name' => $class['class_name'], 'time' => $displaySlot, 'slot_code' => $slotCode, 'class_id' => $class['id']];
+        
+        // Thêm thông tin tên lớp và giờ học vào lịch làm việc công tác
+        $teacherName = $userMap[$sessionInfo['assigned_user_id']] ?? '';
+        $weekSchedule[$displayDate][] = [
+            'name' => $class['class_name'], 
+            'time' => $displaySlot, 
+            'slot_code' => $slotCode, 
+            'class_id' => $class['id'],
+            'teacher' => $teacherName
+        ];
 
-        $monthPreview[$displayDate][] = ['name' => $class['class_name'], 'time' => $displaySlot, 'slot_code' => $slotCode, 'class_id' => $class['id']];
+        $monthPreview[$displayDate][] = [
+            'name' => $class['class_name'], 
+            'time' => $displaySlot, 
+            'slot_code' => $slotCode, 
+            'class_id' => $class['id']
+        ];
     }
 }
 

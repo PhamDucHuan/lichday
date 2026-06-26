@@ -109,7 +109,7 @@ foreach ($users as $u) {
             <div class="table-responsive">
                 <table class="schedule-table">
                     <thead><tr id="table-header"></tr></thead>
-                    <tbody><tr id="table-body"></tr></tbody>
+                    <tbody id="table-body"></tbody>
                 </table>
             </div>
         <?php endif; ?>
@@ -120,6 +120,8 @@ foreach ($users as $u) {
         const targetUserId = <?= $target_user_id ?>;
         let freeSlotsExpanded = false;
         let monthPreviewExpanded = false;
+
+        const allowedSlots = ['S1', 'S2', 'C1', 'C2', 'T1', 'T2'];
 
         function setFreeSlotsVisibility(isVisible) {
             const summary = document.getElementById('free-slots-summary');
@@ -140,7 +142,6 @@ foreach ($users as $u) {
         async function fetchSchedule(offset) {
             if (targetUserId === 0) return;
             try {
-                // Gọi API truyền thêm user_id của người cần xem lịch
                 const response = await fetch(`api.php?week=${offset}&user_id=${targetUserId}`);
                 if (response.status === 401) {
                     window.location.href = 'login.php';
@@ -150,30 +151,45 @@ foreach ($users as $u) {
                 
                 document.getElementById('current-week-text').innerText = `Tuần: ${data.monday} - ${data.sunday}`;
                 
+                // Tái cấu trúc Header: Cột đầu tiên là Cột Ca Dạy
                 const headerRow = document.getElementById('table-header');
-                headerRow.innerHTML = '';
+                headerRow.innerHTML = '<th style="background-color: #e2e8f0; font-weight: bold; width: 100px;">Ca / Ngày</th>';
                 data.dates.forEach(item => {
                     headerRow.innerHTML += `<th>${item.day_name}<small>${item.date_formatted}</small></th>`;
                 });
 
+                // Tái cấu trúc Body: Chuyển dữ liệu hiển thị theo dòng Ca học
                 const bodyRow = document.getElementById('table-body');
                 bodyRow.innerHTML = '';
-                data.dates.forEach(item => {
-                    let cellContent = '';
-                    if (data.schedule[item.date_raw] && data.schedule[item.date_raw].length > 0) {
-                        data.schedule[item.date_raw].forEach(session => {
-                            cellContent += `
-                                <div class="session-card" style="background-color: #f8fafc; border-left-color: var(--text-muted);">
-                                    <div class="class-name" style="color: #334155;">${session.name}</div>
-                                    <div class="class-time" style="background: #e2e8f0; color: #475569;">${session.time}</div>
-                                </div>`;
-                        });
-                    } else {
-                        cellContent = '<span class="empty-day">·</span>';
-                    }
-                    bodyRow.innerHTML += `<td>${cellContent}</td>`;
+
+                allowedSlots.forEach(slotCode => {
+                    let rowHtml = `<tr>`;
+                    rowHtml += `<td style="background-color: #f8fafc; font-weight: 600; text-align: center; vertical-align: middle; border-right: 2px solid var(--border-color); color: var(--primary);">Ca ${slotCode}</td>`;
+                    
+                    data.dates.forEach(item => {
+                        let cellContent = '';
+                        const daySessions = data.schedule[item.date_raw] || [];
+                        const matchedSessions = daySessions.filter(s => s.slot_code === slotCode);
+
+                        if (matchedSessions.length > 0) {
+                            matchedSessions.forEach(session => {
+                                cellContent += `
+                                    <div class="session-card" style="background-color: #f8fafc; border-left-color: var(--text-muted); margin-bottom:6px;">
+                                        <div class="class-name" style="color: #334155;">${session.name}</div>
+                                        <div class="class-time" style="background: #e2e8f0; color: #475569;">${session.time}</div>
+                                    </div>`;
+                            });
+                        } else {
+                            cellContent = '<span class="empty-day">·</span>';
+                        }
+                        rowHtml += `<td>${cellContent}</td>`;
+                    });
+                    
+                    rowHtml += `</tr>`;
+                    bodyRow.innerHTML += rowHtml;
                 });
 
+                // Xử lý khối Lịch trống & Dự kiến lịch giữ nguyên như logic cũ
                 const freeSlotSummary = document.getElementById('free-slots-summary');
                 const toggleButton = document.getElementById('toggle-free-slots');
                 freeSlotSummary.innerHTML = '';

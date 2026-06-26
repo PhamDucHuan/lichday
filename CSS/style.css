@@ -447,3 +447,18 @@ body.login-page {
     padding: 8px 10px;
     box-sizing: border-box;
 }
+
+/* Giới hạn và ẩn phần text ca dạy bị dài */
+.admin-table td:nth-child(6) {
+    max-width: 180px;            /* Chiều rộng tối đa của cột Giờ Dạy */
+    white-space: nowrap;         /* Không cho tự động xuống dòng */
+    overflow: hidden;            /* Ẩn phần bị tràn */
+    text-overflow: ellipsis;     /* Hiển thị dấu ba chấm (...) */
+}
+
+/* Khi di chuột vào ô đó thì hiển thị đầy đủ (tùy chọn) */
+.admin-table td:nth-child(6):hover {
+    white-space: normal;
+    overflow: visible;
+    background: #f8fafc;        /* Đổi nền nhẹ để dễ nhìn */
+}

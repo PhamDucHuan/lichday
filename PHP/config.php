@@ -84,10 +84,20 @@ function ensureScheduleOverrideTable(PDO $db): void {
         override_date DATE NOT NULL,
         new_date DATE NULL,
         new_slot VARCHAR(50) NULL,
+        new_user_id INT NULL,
         action_type VARCHAR(20) NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // Tự động kiểm tra thêm cột nếu database cũ đã tồn tại
+    $columns = [];
+    foreach ($db->query('SHOW COLUMNS FROM class_schedule_overrides') as $row) {
+        $columns[] = $row['Field'];
+    }
+    if (!in_array('new_user_id', $columns, true)) {
+        $db->exec("ALTER TABLE class_schedule_overrides ADD COLUMN new_user_id INT NULL AFTER new_slot");
+    }
 }
 
 function ensureTeachingSlotsTable(PDO $db): void {
@@ -175,11 +185,8 @@ function buildClassSessionDates(array $class, array $overrides): array {
     $classType = $class['class_type'] ?? 'fixed';
     $slotOptions = [];
 
-    if ($classType === 'flexible') {
-        $rawSlots = trim($class['flexible_slots'] ?? '');
-        if ($rawSlots !== '') {
-            $slotOptions = array_values(array_filter(array_map('trim', explode(',', $rawSlots)), static fn($value) => $value !== ''));
-        }
+    if ($classType === 'flexible' && trim($class['flexible_slots'] ?? '') !== '') {
+        $slotOptions = array_values(array_filter(array_map('trim', explode(',', $class['flexible_slots'])), static fn($value) => $value !== ''));
     }
     if ($slotOptions === []) {
         $slotOptions = [$class['slot_time']];
@@ -201,25 +208,28 @@ function buildClassSessionDates(array $class, array $overrides): array {
 
         $displayDate = $date;
         $displaySlot = $class['slot_time'];
+        $assignedUserId = $class['assigned_user_id']; // Mặc định là giảng viên gốc của lớp
+
         if ($classType === 'flexible' && count($slotOptions) > 0) {
             $displaySlot = $slotOptions[$sessionOrder % count($slotOptions)];
         }
-        if ($override && $override['action_type'] === 'move' && !empty($override['new_date'])) {
-            $displayDate = $override['new_date'];
-        }
-        if ($override && $override['action_type'] === 'move' && !empty($override['new_slot'])) {
-            $displaySlot = $override['new_slot'];
+        if ($override && $override['action_type'] === 'move') {
+            if (!empty($override['new_date'])) $displayDate = $override['new_date'];
+            if (!empty($override['new_slot'])) $displaySlot = $override['new_slot'];
+            if (!empty($override['new_user_id'])) $assignedUserId = $override['new_user_id']; // Giảng viên dạy thay
         }
 
         $effectiveSessions[] = [
             'original_date' => $date,
             'display_date' => $displayDate,
             'display_slot' => $displaySlot,
+            'assigned_user_id' => $assignedUserId
         ];
         $lastDate = $date;
         $sessionOrder++;
     }
 
+    // Vòng lặp bù buổi nếu thiếu
     while (count($effectiveSessions) < (int)$class['total_sessions']) {
         $cursor = new DateTime($lastDate);
         $cursor->modify('+1 day');
@@ -236,6 +246,7 @@ function buildClassSessionDates(array $class, array $overrides): array {
                     'original_date' => $cursor->format('Y-m-d'),
                     'display_date' => $cursor->format('Y-m-d'),
                     'display_slot' => $displaySlot,
+                    'assigned_user_id' => $class['assigned_user_id']
                 ];
                 $lastDate = $cursor->format('Y-m-d');
                 $sessionOrder++;
@@ -246,5 +257,5 @@ function buildClassSessionDates(array $class, array $overrides): array {
     }
 
     return $effectiveSessions;
-}
+}   
 ?>

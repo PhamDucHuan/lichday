@@ -89,10 +89,22 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
         .badge-active { background: #d1fae5; color: #065f46; }
         .badge-paused { background: #fef3c7; color: #92400e; }
         .badge-closed { background: #f1f5f9; color: #475569; }
-        .action-links a { font-size: 0.85rem; margin-right: 8px; text-decoration: none; font-weight: 500; }
-        .link-active { color: var(--success); }
-        .link-pause { color: #d97706; }
-        .link-close { color: #64748b; }
+        .action-links { display: flex; gap: 8px; align-items: center; }
+        .status-select { padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); font-size: 0.85rem; background: #fff; cursor: pointer; font-weight: 500; }
+        
+        /* CSS chống tràn cho cột Giờ Dạy */
+        .truncated-cell {
+            max-width: 160px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .truncated-cell:hover {
+            white-space: normal;
+            overflow: visible;
+            word-break: break-word;
+            background: #fafafa;
+        }
     </style>
 </head>
 <body>
@@ -278,28 +290,39 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
                 </thead>
                 <tbody>
                     <?php foreach ($classes as $c): ?>
+                    <?php 
+                        // Gom toàn bộ text giờ dạy để gắn vào tooltip title khi rê chuột
+                        $fullSlotsText = (($c['class_type'] ?? 'fixed') === 'flexible' ? ($c['flexible_slots'] ?: 'Ca xoay') : $c['slot_time']);
+                        if (!empty($c['manual_slot'])) {
+                            $fullSlotsText .= " [Lịch thủ công: " . $c['manual_slot'] . "]";
+                        }
+                    ?>
                     <tr>
                         <td><strong style="color: var(--primary);"><?= htmlspecialchars($c['class_name']) ?></strong></td>
                         <td><?= htmlspecialchars($c['start_date']) ?></td>
                         <td><span style="background: #f1f5f9; padding: 4px 8px; border-radius:4px; font-size:0.85rem; font-weight:500;"><?= htmlspecialchars($c['schedule_days']) ?></span></td>
                         <td><span class="badge badge-<?= ($c['class_type'] ?? 'fixed') === 'flexible' ? 'active' : 'paused' ?>"><?= (($c['class_type'] ?? 'fixed') === 'flexible') ? 'Linh hoạt' : 'Cố định' ?></span></td>
                         <td><?= htmlspecialchars(((isset($userMap[(int)$c['assigned_user_id']]) ? $userMap[(int)$c['assigned_user_id']]['full_name'] : '') ?: (isset($userMap[(int)$c['assigned_user_id']]) ? $userMap[(int)$c['assigned_user_id']]['username'] : 'Chưa gán'))) ?></td>
-                        <td><?= htmlspecialchars(($c['class_type'] ?? 'fixed') === 'flexible' ? ($c['flexible_slots'] ?: 'Ca xoay') : $c['slot_time']) ?><?php if (!empty($c['manual_slot'])): ?><br><span style="color:#7c3aed; font-size:0.8rem;">[Lịch thủ công: <?= htmlspecialchars($c['manual_slot']) ?>]</span><?php endif; ?></td>
+                        
+                        <td class="truncated-cell" title="<?= htmlspecialchars($fullSlotsText) ?>">
+                            <?= htmlspecialchars(($c['class_type'] ?? 'fixed') === 'flexible' ? ($c['flexible_slots'] ?: 'Ca xoay') : $c['slot_time']) ?>
+                            <?php if (!empty($c['manual_slot'])): ?>
+                                <br><span style="color:#7c3aed; font-size:0.8rem;">[Lịch thủ công: <?= htmlspecialchars($c['manual_slot']) ?>]</span>
+                            <?php endif; ?>
+                        </td>
+                        
                         <td><b><?= htmlspecialchars($c['total_sessions']) ?></b> buổi</td>
                         <td>
                             <span class="badge badge-<?= strtolower($c['status']) ?>"><?= $c['status'] ?></span>
                         </td>
                         <td class="action-links">
-                            <?php if($c['status'] !== 'Active'): ?>
-                                <a href="add_class.php?action=Active&id=<?= $c['id'] ?>" class="link-active">▶ Mở</a>
-                            <?php endif; ?>
-                            <?php if($c['status'] === 'Active'): ?>
-                                <a href="add_class.php?action=Paused&id=<?= $c['id'] ?>" class="link-pause">⏸ Tạm dừng</a>
-                            <?php endif; ?>
-                            <?php if($c['status'] !== 'Closed'): ?>
-                                <a href="add_class.php?action=Closed&id=<?= $c['id'] ?>" class="link-close">✖ Đóng</a>
-                            <?php endif; ?>
-                            <a href="add_class.php?delete=<?= $c['id'] ?>" class="btn-delete" style="padding:2px 6px; font-size:0.8rem;" onclick="return confirm('Xóa?')">Xóa</a>
+                            <select class="status-select" onchange="window.location.href='add_class.php?action=' + this.value + '&id=<?= $c['id'] ?>'">
+                                <option value="Active" <?= $c['status'] === 'Active' ? 'selected' : '' ?>>▶ Hoạt động</option>
+                                <option value="Paused" <?= $c['status'] === 'Paused' ? 'selected' : '' ?>>⏸ Tạm dừng</option>
+                                <option value="Closed" <?= $c['status'] === 'Closed' ? 'selected' : '' ?>>✖ Đóng lớp</option>
+                            </select>
+                            
+                            <a href="add_class.php?delete=<?= $c['id'] ?>" class="btn-delete" style="padding:6px 10px; font-size:0.85rem;" onclick="return confirm('Bạn chắc chắn muốn xóa lớp này?')">Xóa</a>
                         </td>
                     </tr>
                     <?php endforeach; ?>
