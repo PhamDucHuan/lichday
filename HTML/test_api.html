@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Kiểm tra kết nối API PHP</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 30px; line-height: 1.6; }
+        .box { padding: 15px; border-radius: 5px; margin-top: 15px; font-weight: bold; }
+        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        pre { background: #eee; padding: 15px; border-radius: 5px; overflow-x: auto; font-weight: normal; }
+    </style>
+</head>
+<body>
+    <h2>Hệ thống Kiểm tra kết nối Live Server ➔ PHP API</h2>
+    <p>Trạng thái kiểm tra sẽ xuất hiện ở bên dưới:</p>
+
+    <div id="status-result">Đang gửi yêu cầu kiểm tra kết nối...</div>
+    
+    <div id="data-result" style="display: none;">
+        <h3>Dữ liệu thô nhận được từ MySQL (JSON):</h3>
+        <pre id="json-output"></pre>
+    </div>
+
+    <script>
+        async function testConnection() {
+            const resultDiv = document.getElementById('status-result');
+            const dataDiv = document.getElementById('data-result');
+            const jsonOutput = document.getElementById('json-output');
+
+            try {
+                // Gửi yêu cầu gọi thử file api.php
+                const response = await fetch('api.php?week=0');
+                
+                // Trường hợp 1: Chưa đăng nhập (api.php chặn quyền lợi và trả về mã 401)
+                if (response.status === 401) {
+                    resultDiv.className = "box success";
+                    resultDiv.innerHTML = "✅ KẾT NỐI PHP THÀNH CÔNG!<br>" + 
+                                          "• Trạng thái: File api.php hoạt động tốt.<br>" +
+                                          "• Bảo mật: Cơ chế chặn quyền hoạt động chuẩn xác (Hệ thống trả về lỗi 401 Unauthorized do bạn chưa đăng nhập tài khoản).";
+                    return;
+                }
+
+                // Trường hợp 2: Đã đăng nhập và lấy được dữ liệu thành công (Mã 200)
+                if (response.ok) {
+                    const data = await response.json();
+                    resultDiv.className = "box success";
+                    resultDiv.innerHTML = "✅ KẾT NỐI PHP VÀ DATABASE THÀNH CÔNG TRỌN VẸN!<br>" + 
+                                          "• Đã vượt qua kiểm tra đăng nhập và đọc được dữ liệu từ cơ sở dữ liệu MySQL.";
+                    
+                    // Hiển thị dữ liệu nhận được để đối chiếu
+                    dataDiv.style.display = "block";
+                    jsonOutput.innerText = JSON.stringify(data, null, 4);
+                    return;
+                }
+
+                // Trường hợp 3: Máy chủ trả về lỗi khác (500, 404,...)
+                resultDiv.className = "box error";
+                resultDiv.innerHTML = `❌ LỖI MÁY CHỦ: File api.php có tồn tại nhưng trả về mã lỗi hệ thống ${response.status}. Hãy kiểm tra xem file config.php cấu hình MySQL đã chính xác chưa.`;
+
+            } catch (error) {
+                // Trường hợp 4: Không tìm thấy file api.php hoặc bị chặn CORS
+                resultDiv.className = "box error";
+                resultDiv.innerHTML = "❌ KẾT NỐI THẤT BẠI!<br>" + 
+                                      "• Trình duyệt không thể tìm thấy hoặc không thể kết nối tới file 'api.php'.<br>" +
+                                      "• Cách xử lý: Hãy chắc chắn rằng bạn đang bật XAMPP (Apache & MySQL) hoặc Hosting hoạt động bình thường, và file test_api.html phải đặt nằm chung một thư mục với file api.php.";
+                console.error("Chi tiết lỗi:", error);
+            }
+        }
+
+        // Chạy kiểm tra ngay khi load trang
+        testConnection();
+    </script>
+</body>
+</html>
