@@ -121,6 +121,9 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
             <li><a href="../HTML/index.php">📅 Lịch Dạy Của Tôi</a></li>
             <li><a href="view_others.php">🔍 Xem Lịch Người Khác</a></li>
             <li><a href="add_class.php">➕ Thêm Lớp & Xếp Lịch</a></li>
+            <li><a href="manage_students.php">👤 Quản lý học viên</a></li>
+            <li><a href="attendance.php">✅ Điểm danh học viên</a></li>
+            <li><a href="student_stats.php">📊 Thống kê học viên</a></li>
             <li><a href="manage_slots.php">🕒 Quản lý ca dạy</a></li>
             <li class="active"><a href="manual_schedule.php">🗓 Xếp Lịch Thủ Công</a></li>
             <?php if (($_SESSION['role'] ?? '') === 'admin'): ?>

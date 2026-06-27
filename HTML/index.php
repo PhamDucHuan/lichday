@@ -9,7 +9,6 @@ if (!isset($_SESSION['user_id'])) {
     header('Location: ../PHP/login.php');
     exit;
 }
-// Thêm đoạn này xuống dưới khối kiểm tra đăng nhập (Khoảng dòng 11) để lấy danh sách giảng viên:
 $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status='active' ORDER BY full_name, username")->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
@@ -22,12 +21,14 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
     <link rel="stylesheet" href="../CSS/style.css">
 </head>
 <body>
-    <div class="sidebar">
+   <div class="sidebar">
         <div class="sidebar-brand">Lịch Dạy Nội Bộ</div>
         <ul class="sidebar-menu">
             <li class="active"><a href="index.php">📅 Lịch Dạy Của Tôi</a></li>
             <li><a href="../PHP/view_others.php">🔍 Xem Lịch Người Khác</a></li>
             <li><a href="../PHP/add_class.php">➕ Thêm Lớp & Xếp Lịch</a></li>
+            <li><a href="../PHP/manage_students.php">👤 Quản lý học viên</a></li>
+            <li><a href="../PHP/attendance.php">✅ Điểm danh học viên</a></li>
             <li><a href="../PHP/manage_slots.php">🕒 Quản lý ca dạy</a></li>
             <li><a href="../PHP/manual_schedule.php">🗓 Xếp Lịch Thủ Công</a></li>
             <?php if (($_SESSION['role'] ?? '') === 'admin'): ?>
@@ -50,15 +51,24 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                     <strong id="panel-class-name"></strong>
                     <button type="button" class="btn-delete" onclick="closeActionPanel()" style="padding:4px 8px;">✕</button>
-                <div class="form-group">
-    <label>Giảng viên dạy thay (Tùy chọn)</label>
-    <select id="panel-new-user" name="new_user_id">
-        <option value="0">-- Giữ nguyên giảng viên gốc --</option>
-        <?php foreach ($usersList as $u): ?>
-            <option value="<?= $u['id'] ?>"><?= htmlspecialchars($u['full_name'] ?: $u['username']) ?></option>
-        <?php endforeach; ?>
-    </select>
-</div>
+                </div>
+                <form id="move-form" class="compact-form">
+                    <input type="hidden" id="panel-class-id" name="class_id">
+                    <input type="hidden" id="panel-session-date" name="session_date">
+                    <input type="hidden" name="action" value="move">
+                    <div class="form-group">
+                        <label>Ngày mới</label>
+                        <input type="date" id="panel-new-date" name="new_date" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Giảng viên dạy thay (Tùy chọn)</label>
+                        <select id="panel-new-user" name="new_user_id">
+                            <option value="0">-- Giữ nguyên giảng viên gốc --</option>
+                            <?php foreach ($usersList as $u): ?>
+                                <option value="<?= $u['id'] ?>"><?= htmlspecialchars($u['full_name'] ?: $u['username']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
                     <div class="form-group">
                         <label>Ca mới</label>
                         <select id="panel-new-slot" name="new_slot" required>
@@ -104,9 +114,6 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
         let activeClassId = null;
         let activeSessionDate = null;
 
-        // Định nghĩa danh sách mã ca dạy chuẩn từ API để khớp dữ liệu dòng
-        const allowedSlots = ['S1', 'S2', 'C1', 'C2', 'T1', 'T2'];
-
         function openActionPanel(classId, className, sessionDate) {
             document.getElementById('panel-class-id').value = classId;
             document.getElementById('panel-session-date').value = sessionDate;
@@ -132,29 +139,23 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
 
                 document.getElementById('current-week-text').innerText = 'Tuần: ' + data.monday + ' - ' + data.sunday;
 
-                // Tái cấu trúc Header: Cột đầu tiên là Cột Ca Dạy
                 const headerRow = document.getElementById('table-header');
-                headerRow.innerHTML = '<th style="background-color: #e2e8f0; font-weight: bold; width: 100px;">Ca / Ngày</th>';
+                headerRow.innerHTML = '<th style="background-color: #e2e8f0; font-weight: bold; width: 140px;">Ca dạy</th>';
                 data.dates.forEach(item => {
                     headerRow.innerHTML += '<th>' + item.day_name + '<small>' + item.date_formatted + '</small></th>';
                 });
 
-                // Tái cấu trúc Body: Lặp theo từng Ca (Dòng)
                 const bodyContainer = document.getElementById('table-body');
                 bodyContainer.innerHTML = '';
 
-                allowedSlots.forEach(slotCode => {
+                data.slots_definitions.forEach(slotItem => {
                     let rowHtml = `<tr>`;
-                    // Cột trái đầu tiên hiển thị Tên Ca dạy
-                    rowHtml += `<td style="background-color: #f8fafc; font-weight: 600; text-align: center; vertical-align: middle; border-right: 2px solid var(--border-color); color: var(--primary);">Ca ${slotCode}</td>`;
+                    rowHtml += `<td style="background-color: #f8fafc; font-weight: 600; text-align: left; vertical-align: middle; border-right: 2px solid var(--border-color); color: var(--primary); padding: 10px; font-size: 0.85rem;">${slotItem.slot_label}</td>`;
                     
-                    // Duyệt tiếp qua các ngày trong tuần của ca đó
                     data.dates.forEach(item => {
                         let cellContent = '';
                         const daySessions = data.schedule[item.date_raw] || [];
-                        
-                        // Lọc các lớp thuộc đúng Ca này trong ngày hiện tại
-                        const matchedSessions = daySessions.filter(s => s.slot_code === slotCode);
+                        const matchedSessions = daySessions.filter(s => s.slot_code === slotItem.slot_code);
 
                         if (matchedSessions.length > 0) {
                             matchedSessions.forEach(session => {

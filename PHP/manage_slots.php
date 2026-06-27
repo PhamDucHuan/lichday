@@ -53,6 +53,9 @@ $slots = $db->query('SELECT * FROM teaching_slots ORDER BY start_time, slot_code
             <li><a href="../HTML/index.php">📅 Lịch Dạy Của Tôi</a></li>
             <li><a href="view_others.php">🔍 Xem Lịch Người Khác</a></li>
             <li><a href="add_class.php">➕ Thêm Lớp & Xếp Lịch</a></li>
+            <li><a href="manage_students.php">👤 Quản lý học viên</a></li>
+            <li><a href="attendance.php">✅ Điểm danh học viên</a></li>
+            <li class="active"><a href="student_stats.php">📊 Thống kê học viên</a></li>
             <li class="active"><a href="manage_slots.php">🕒 Quản lý ca dạy</a></li>
             <li><a href="manual_schedule.php">🗓 Xếp Lịch Thủ Công</a></li>
             <?php if (($_SESSION['role'] ?? '') === 'admin'): ?>
@@ -65,7 +68,7 @@ $slots = $db->query('SELECT * FROM teaching_slots ORDER BY start_time, slot_code
                 <div class="sidebar-user-name"><?= htmlspecialchars($_SESSION['display_name'] ?? $_SESSION['username'] ?? 'Người dùng') ?></div>
             </div>
             <a href="settings.php" class="btn" style="display:block; text-align:center; margin-bottom:10px; background:#1e293b; border:1px solid #334155;">⚙ Cài đặt</a>
-            <a href="logout.php" class="btn-delete" style="display:block; text-align:center;">Đăng xuất</a>
+            <a href="logout.php" class="btn-delete" style="display: block; text-align: center;">Đăng xuất</a>
         </div>
     </div>
 

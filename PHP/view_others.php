@@ -40,6 +40,9 @@ foreach ($users as $u) {
             <li><a href="../HTML/index.php">📅 Lịch Dạy Của Tôi</a></li>
             <li class="active"><a href="view_others.php">🔍 Xem Lịch Người Khác</a></li>
             <li><a href="add_class.php">➕ Thêm Lớp & Xếp Lịch</a></li>
+            <li><a href="manage_students.php">👤 Quản lý học viên</a></li>
+            <li><a href="attendance.php">✅ Điểm danh học viên</a></li>
+            <li><a href="student_stats.php">📊 Thống kê học viên</a></li>
             <li><a href="manage_slots.php">🕒 Quản lý ca dạy</a></li>
             <li><a href="manual_schedule.php">🗓 Xếp Lịch Thủ Công</a></li>
             <?php if (($_SESSION['role'] ?? '') === 'admin'): ?>
@@ -121,8 +124,6 @@ foreach ($users as $u) {
         let freeSlotsExpanded = false;
         let monthPreviewExpanded = false;
 
-        const allowedSlots = ['S1', 'S2', 'C1', 'C2', 'T1', 'T2'];
-
         function setFreeSlotsVisibility(isVisible) {
             const summary = document.getElementById('free-slots-summary');
             const button = document.getElementById('toggle-free-slots');
@@ -151,25 +152,24 @@ foreach ($users as $u) {
                 
                 document.getElementById('current-week-text').innerText = `Tuần: ${data.monday} - ${data.sunday}`;
                 
-                // Tái cấu trúc Header: Cột đầu tiên là Cột Ca Dạy
                 const headerRow = document.getElementById('table-header');
-                headerRow.innerHTML = '<th style="background-color: #e2e8f0; font-weight: bold; width: 100px;">Ca / Ngày</th>';
+                headerRow.innerHTML = '<th style="background-color: #e2e8f0; font-weight: bold; width: 140px;">Ca dạy</th>';
                 data.dates.forEach(item => {
                     headerRow.innerHTML += `<th>${item.day_name}<small>${item.date_formatted}</small></th>`;
                 });
 
-                // Tái cấu trúc Body: Chuyển dữ liệu hiển thị theo dòng Ca học
                 const bodyRow = document.getElementById('table-body');
                 bodyRow.innerHTML = '';
 
-                allowedSlots.forEach(slotCode => {
+                // FIX SỬA LỖI ĐOẠN NÀY: Duyệt render động theo slots_definitions nhận từ API
+                data.slots_definitions.forEach(slotItem => {
                     let rowHtml = `<tr>`;
-                    rowHtml += `<td style="background-color: #f8fafc; font-weight: 600; text-align: center; vertical-align: middle; border-right: 2px solid var(--border-color); color: var(--primary);">Ca ${slotCode}</td>`;
+                    rowHtml += `<td style="background-color: #f8fafc; font-weight: 600; text-align: left; vertical-align: middle; border-right: 2px solid var(--border-color); color: var(--primary); padding: 10px; font-size: 0.85rem;">${slotItem.slot_label}</td>`;
                     
                     data.dates.forEach(item => {
                         let cellContent = '';
                         const daySessions = data.schedule[item.date_raw] || [];
-                        const matchedSessions = daySessions.filter(s => s.slot_code === slotCode);
+                        const matchedSessions = daySessions.filter(s => s.slot_code === slotItem.slot_code);
 
                         if (matchedSessions.length > 0) {
                             matchedSessions.forEach(session => {
@@ -189,7 +189,6 @@ foreach ($users as $u) {
                     bodyRow.innerHTML += rowHtml;
                 });
 
-                // Xử lý khối Lịch trống & Dự kiến lịch giữ nguyên như logic cũ
                 const freeSlotSummary = document.getElementById('free-slots-summary');
                 const toggleButton = document.getElementById('toggle-free-slots');
                 freeSlotSummary.innerHTML = '';

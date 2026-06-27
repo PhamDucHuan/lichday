@@ -178,22 +178,55 @@ function generateDates($startDate, $daysArray, $totalSessions) {
 }
 
 function buildClassSessionDates(array $class, array $overrides): array {
+    global $db;
+    
+    $classType = $class['class_type'] ?? 'fixed';
+    
+    // NẾU LÀ LỚP XOAY CA LINH HOẠT: Hoàn toàn lấy lịch xếp bằng tay thủ công
+    if ($classType === 'flexible') {
+        $effectiveSessions = [];
+        // Lọc ra các bản ghi xếp lịch thủ công của lớp này
+        $classOverrides = array_filter($overrides, static fn($row) => (int)$row['class_id'] === (int)$class['id'] && $row['action_type'] === 'move');
+        
+        // Sắp xếp các buổi học theo ngày tăng dần
+        usort($classOverrides, static fn($a, $b) => strcmp($a['new_date'], $b['new_date']));
+        
+        reset($classOverrides);
+        for ($i = 0; $i < (int)$class['total_sessions']; $i++) {
+            $currentOverride = current($classOverrides);
+            if ($currentOverride) {
+                $effectiveSessions[] = [
+                    'original_date' => $currentOverride['override_date'], // Ngày định danh gốc
+                    'display_date' => $currentOverride['new_date'],
+                    'display_slot' => $currentOverride['new_slot'],
+                    'assigned_user_id' => $currentOverride['new_user_id'] ?: $class['assigned_user_id']
+                ];
+                next($classOverrides);
+            } else {
+                // Nếu chưa được xếp đủ số buổi bằng tay, tạo các buổi chờ (placeholder) để hiển thị cấu hình xếp lịch
+                $effectiveSessions[] = [
+                    'original_date' => "WAIT-SESSION-{$i}", 
+                    'display_date' => null, // Chưa xếp lịch ngày cụ thể
+                    'display_slot' => 'Chưa xếp lịch',
+                    'assigned_user_id' => $class['assigned_user_id']
+                ];
+            }
+        }
+        return $effectiveSessions;
+    }
+
+    // NẾU LÀ LỚP CỐ ĐỊNH: Giữ nguyên logic tính tự động cũ
     $daysArray = explode(',', $class['schedule_days']);
-    $originalDates = generateDates($class['start_date'], $daysArray, (int)$class['total_sessions']);
+    $stmtAbs = $db->prepare("SELECT COUNT(*) FROM attendance WHERE class_id = ? AND status = 'Absent'");
+    $stmtAbs->execute([$class['id']]);
+    $absentCount = (int)$stmtAbs->fetchColumn();
+
+    $actualTotalSessions = (int)$class['total_sessions'] + $absentCount;
+    $originalDates = generateDates($class['start_date'], $daysArray, $actualTotalSessions);
     $effectiveSessions = [];
     $lastDate = $class['start_date'];
-    $classType = $class['class_type'] ?? 'fixed';
-    $slotOptions = [];
 
-    if ($classType === 'flexible' && trim($class['flexible_slots'] ?? '') !== '') {
-        $slotOptions = array_values(array_filter(array_map('trim', explode(',', $class['flexible_slots'])), static fn($value) => $value !== ''));
-    }
-    if ($slotOptions === []) {
-        $slotOptions = [$class['slot_time']];
-    }
-
-    $sessionOrder = 0;
-    foreach ($originalDates as $date) {
+    foreach ($originalDates as $sessionOrder => $date) {
         $override = null;
         foreach ($overrides as $row) {
             if ((int)$row['class_id'] === (int)$class['id'] && $row['override_date'] === $date) {
@@ -208,15 +241,12 @@ function buildClassSessionDates(array $class, array $overrides): array {
 
         $displayDate = $date;
         $displaySlot = $class['slot_time'];
-        $assignedUserId = $class['assigned_user_id']; // Mặc định là giảng viên gốc của lớp
+        $assignedUserId = $class['assigned_user_id'];
 
-        if ($classType === 'flexible' && count($slotOptions) > 0) {
-            $displaySlot = $slotOptions[$sessionOrder % count($slotOptions)];
-        }
         if ($override && $override['action_type'] === 'move') {
             if (!empty($override['new_date'])) $displayDate = $override['new_date'];
             if (!empty($override['new_slot'])) $displaySlot = $override['new_slot'];
-            if (!empty($override['new_user_id'])) $assignedUserId = $override['new_user_id']; // Giảng viên dạy thay
+            if (!empty($override['new_user_id'])) $assignedUserId = $override['new_user_id'];
         }
 
         $effectiveSessions[] = [
@@ -226,36 +256,8 @@ function buildClassSessionDates(array $class, array $overrides): array {
             'assigned_user_id' => $assignedUserId
         ];
         $lastDate = $date;
-        $sessionOrder++;
-    }
-
-    // Vòng lặp bù buổi nếu thiếu
-    while (count($effectiveSessions) < (int)$class['total_sessions']) {
-        $cursor = new DateTime($lastDate);
-        $cursor->modify('+1 day');
-        $allowedDays = array_map('mapVnDayToNum', $daysArray);
-
-        while (true) {
-            $dayOfWeek = (int)$cursor->format('w');
-            if (in_array($dayOfWeek, $allowedDays, true)) {
-                $displaySlot = $class['slot_time'];
-                if ($classType === 'flexible' && count($slotOptions) > 0) {
-                    $displaySlot = $slotOptions[$sessionOrder % count($slotOptions)];
-                }
-                $effectiveSessions[] = [
-                    'original_date' => $cursor->format('Y-m-d'),
-                    'display_date' => $cursor->format('Y-m-d'),
-                    'display_slot' => $displaySlot,
-                    'assigned_user_id' => $class['assigned_user_id']
-                ];
-                $lastDate = $cursor->format('Y-m-d');
-                $sessionOrder++;
-                break;
-            }
-            $cursor->modify('+1 day');
-        }
     }
 
     return $effectiveSessions;
-}   
+}
 ?>

@@ -12,8 +12,6 @@ if (!isset($_SESSION['user_id'])) {
 
 require_once 'config.php';
 
-// (Giữ nguyên toàn bộ đoạn code tính toán $weekOffset, $classes, $weekSchedule ở file api.php cũ tại đây...)
-// ...
 $weekOffset = isset($_GET['week']) ? (int)$_GET['week'] : 0;
 $today = new DateTime();
 if ($weekOffset !== 0) { $today->modify($weekOffset . ' week'); }
@@ -23,7 +21,7 @@ $sunday = clone $today; $sunday->modify('this week Sunday');
 $view_user_id = isset($_GET['user_id']) ? (int)$_GET['user_id'] : $_SESSION['user_id'];
 
 $canView = false;
-if ($_SESSION['role'] === 'admin' || $view_user_id === (int)$_SESSION['user_id']) {
+if ($_SESSION['role'] === 'admin' || (int)$view_user_id === (int)$_SESSION['user_id']) {
     $canView = true;
 } else {
     $stmt = $db->prepare("SELECT 1 FROM user_view_permissions WHERE viewer_id = ? AND viewed_user_id = ? LIMIT 1");
@@ -37,18 +35,24 @@ if (!$canView) {
     exit;
 }
 
-$stmt = $db->query("SELECT * FROM classes WHERE status = 'Active'");
-$classes = $stmt->fetchAll(PDO::FETCH_ASSOC);$stmt->execute([$view_user_id]);
-$overrideStmt = $db->query("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides");
-$overrides = $overrideStmt->fetchAll(PDO::FETCH_ASSOC);
+// Lấy danh sách ca học thực tế trong DB để định hình dòng
+$slotsData = getTeachingSlotOptions($db);
+
+// Lấy toàn bộ lớp học đang hoạt động
+$classes = $db->query("SELECT * FROM classes WHERE status = 'Active'")->fetchAll(PDO::FETCH_ASSOC);
+
+// Lấy toàn bộ lịch sử đổi lịch/bỏ buổi thủ công
+$overrideRows = $db->query("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides")->fetchAll(PDO::FETCH_ASSOC);
+
 $weekSchedule = [];
 $monthPreview = [];
 $usersQuery = $db->query("SELECT id, username, full_name FROM users")->fetchAll(PDO::FETCH_ASSOC);
 $userMap = []; foreach ($usersQuery as $u) { $userMap[$u['id']] = $u['full_name'] ?: $u['username']; }
+
 $daysOfWeek = [1 => 'Thứ 2', 2 => 'Thứ 3', 3 => 'Thứ 4', 4 => 'Thứ 5', 5 => 'Thứ 6', 6 => 'Thứ 7', 0 => 'Chủ Nhật'];
 $datesStructure = [];
-$allowedSlots = ['S1', 'S2', 'C1', 'C2', 'T1', 'T2'];
 $tempDate = clone $monday;
+
 for ($i = 0; $i < 7; $i++) {
     $dateRaw = $tempDate->format('Y-m-d');
     $dayNum = (int)$tempDate->format('w');
@@ -56,11 +60,12 @@ for ($i = 0; $i < 7; $i++) {
     $weekSchedule[$dateRaw] = [];
     $tempDate->modify('+1 day');
 }
+
 foreach ($classes as $class) {
-    $effectiveSessions = buildClassSessionDates($class, $overrides);
+    $effectiveSessions = buildClassSessionDates($class, $overrideRows);
     foreach ($effectiveSessions as $sessionInfo) {
-        // KIỂM TRA QUYỀN: Ca học này thuộc về ai (Gốc hoặc Dạy thay)? Nếu không phải target_user thì bỏ qua ca này
-        if ((int)$sessionInfo['assigned_user_id'] !== $view_user_id) {
+        // Lọc chuẩn xác: Chỉ lấy ca dạy có ID giảng viên trùng với người đang được xem lịch
+        if ((int)$sessionInfo['assigned_user_id'] !== (int)$view_user_id) {
             continue;
         }
 
@@ -77,14 +82,13 @@ foreach ($classes as $class) {
         }
 
         $slotCode = null;
-        foreach ($allowedSlots as $slot) {
-            if (strpos($displaySlot, $slot) === 0) {
-                $slotCode = $slot;
+        foreach ($slotsData as $slotItem) {
+            if (strpos($displaySlot, $slotItem['slot_code']) === 0) {
+                $slotCode = $slotItem['slot_code'];
                 break;
             }
         }
         
-        // Thêm thông tin tên lớp và giờ học vào lịch làm việc công tác
         $teacherName = $userMap[$sessionInfo['assigned_user_id']] ?? '';
         $weekSchedule[$displayDate][] = [
             'name' => $class['class_name'], 
@@ -113,14 +117,13 @@ foreach ($datesStructure as $dayInfo) {
         }
     }
     $freeSlots[$dateRaw] = [];
-    foreach ($allowedSlots as $slot) {
-        if (!in_array($slot, $busySlots, true)) {
-            $freeSlots[$dateRaw][] = $slot;
+    foreach ($slotsData as $slotItem) {
+        if (!in_array($slotItem['slot_code'], $busySlots, true)) {
+            $freeSlots[$dateRaw][] = $slotItem['slot_code'];
         }
     }
 }
 
-// Trả thêm thông tin quyền user để hiển thị nút Admin nếu cần
 echo json_encode([
     'user_role' => $_SESSION['role'],
     'monday' => $monday->format('d/m/Y'),
@@ -128,5 +131,6 @@ echo json_encode([
     'dates' => $datesStructure,
     'schedule' => $weekSchedule,
     'free_slots' => $freeSlots,
-    'month_preview' => $monthPreview
+    'month_preview' => $monthPreview,
+    'slots_definitions' => $slotsData
 ]);
