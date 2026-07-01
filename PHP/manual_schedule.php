@@ -24,21 +24,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manual_schedule'
     $action = $_POST['save_manual_schedule'];
 
     if ($classId > 0 && $sessionDate !== '') {
-        $db->prepare('DELETE FROM class_schedule_overrides WHERE class_id = ? AND override_date = ?')->execute([$classId, $sessionDate]);
+        $notificationContext = getScheduleNotificationContext($db, $classId, $sessionDate);
 
         if ($action === 'delete') {
+            $db->prepare('DELETE FROM class_schedule_overrides WHERE class_id = ? AND override_date = ?')->execute([$classId, $sessionDate]);
             $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, action_type) VALUES (?, ?, ?)');
             $stmt->execute([$classId, $sessionDate, 'delete']);
-            $message = "<p class='success'>✓ Đã bỏ buổi học này khỏi lịch và đẩy các buổi tiếp theo về sau.</p>";
+            notifyScheduleChanged($db, 'delete', $notificationContext);
+            $message = "<p class='success'>Đã bỏ buổi học này khỏi lịch và đẩy các buổi tiếp theo về sau.</p>";
         } elseif ($action === 'move' && $newDate !== '' && $newSlot !== '') {
-            $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type) VALUES (?, ?, ?, ?, ?, ?)');
-            $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move']);
-            $message = "<p class='success'>✓ Đã đổi lịch và phân công người dạy thay cho ca thành công.</p>";
+            $classStmt = $db->prepare('SELECT * FROM classes WHERE id = ? LIMIT 1');
+            $classStmt->execute([$classId]);
+            $targetClass = $classStmt->fetch(PDO::FETCH_ASSOC);
+            $conflict = null;
+            if ($targetClass && (($targetClass['class_type'] ?? 'fixed') === 'one_on_one')) {
+                $teacherId = $newUserChanges > 0 ? $newUserChanges : (int)($targetClass['assigned_user_id'] ?? 0);
+                $conflict = findTeacherScheduleConflict($db, $newDate, $newSlot, $teacherId, $classId);
+            }
+
+            if ($conflict) {
+                $message = "<p class='error'>Lớp 1-1 bị trùng lịch với lớp " . htmlspecialchars($conflict['class_name']) . " vào ngày " . date('d/m/Y', strtotime($conflict['date'])) . " (" . htmlspecialchars($conflict['slot']) . ").</p>";
+            } else {
+                $db->prepare('DELETE FROM class_schedule_overrides WHERE class_id = ? AND override_date = ?')->execute([$classId, $sessionDate]);
+                $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type) VALUES (?, ?, ?, ?, ?, ?)');
+                $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move']);
+                notifyScheduleChanged($db, 'move', $notificationContext, [
+                    'new_date' => $newDate,
+                    'new_slot' => $newSlot,
+                    'new_user_id' => $newUserChanges,
+                ]);
+                $message = "<p class='success'>Đã đổi lịch và phân công người dạy thay cho ca thành công.</p>";
+            }
         } else {
-            $message = "<p class='error'>⚠ Vui lòng nhập đầy đủ ngày và ca mới khi đổi lịch.</p>";
+            $message = "<p class='error'>Vui lòng nhập đầy đủ ngày và ca mới khi đổi lịch.</p>";
         }
     } else {
-        $message = "<p class='error'>⚠ Vui lòng chọn lớp và buổi học trước.</p>";
+        $message = "<p class='error'>Vui lòng chọn lớp và buổi học trước.</p>";
     }
 } else {
     $selectedWeekNumber = (int)($_GET['week_number'] ?? $_GET['week'] ?? $currentWeekNumber);
@@ -100,7 +121,7 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
     <meta charset="UTF-8">
     <title>Xếp Lịch Thủ Công</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../CSS/style.css">
+    <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
     <style>
         .week-nav { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
         .week-grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:10px; }
@@ -115,30 +136,7 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
     </style>
 </head>
 <body>
-    <div class="sidebar">
-        <div class="sidebar-brand">Lịch Dạy Nội Bộ</div>
-        <ul class="sidebar-menu">
-            <li><a href="../HTML/index.php">📅 Lịch Dạy Của Tôi</a></li>
-            <li><a href="view_others.php">🔍 Xem Lịch Người Khác</a></li>
-            <li><a href="add_class.php">➕ Thêm Lớp & Xếp Lịch</a></li>
-            <li><a href="manage_students.php">👤 Quản lý học viên</a></li>
-            <li><a href="attendance.php">✅ Điểm danh học viên</a></li>
-            <li><a href="student_stats.php">📊 Thống kê học viên</a></li>
-            <li><a href="manage_slots.php">🕒 Quản lý ca dạy</a></li>
-            <li class="active"><a href="manual_schedule.php">🗓 Xếp Lịch Thủ Công</a></li>
-            <?php if (($_SESSION['role'] ?? '') === 'admin'): ?>
-            <li><a href="admin_users.php">👤 Quản lý người dùng</a></li>
-            <?php endif; ?>
-        </ul>
-        <div class="sidebar-footer">
-            <div class="sidebar-user">
-                <div class="sidebar-user-label">Đăng nhập</div>
-                <div class="sidebar-user-name"><?= htmlspecialchars($_SESSION['display_name'] ?? $_SESSION['username'] ?? 'Người dùng') ?></div>
-            </div>
-            <a href="settings.php" class="btn" style="display:block; text-align:center; margin-bottom:10px; background:#1e293b; border:1px solid #334155;">⚙ Cài đặt</a>
-            <a href="logout.php" class="btn-delete" style="display: block; text-align: center;">Đăng xuất</a>
-        </div>
-    </div>
+    <?php require_once __DIR__ . '/sidebar.php'; ?>
 
     <div class="main-content">
         <div class="header-wrapper">
@@ -182,9 +180,9 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
                     <div class="permission-helper">Tuần: <?= htmlspecialchars($weekLabel) ?></div>
                 </div>
                 <div style="display:flex; gap:8px;">
-                    <a href="manual_schedule.php?class_id=<?= (int)$selectedClass['id'] ?>&week_number=<?= max(1, $selectedWeekNumber - 1) ?>&week_year=<?= $selectedYear ?>" class="btn" style="background:#f8fafc; color:var(--text-main); border:1px solid var(--border-color);">◀ Tuần trước</a>
+                    <a href="manual_schedule.php?class_id=<?= (int)$selectedClass['id'] ?>&week_number=<?= max(1, $selectedWeekNumber - 1) ?>&week_year=<?= $selectedYear ?>" class="btn" style="background:#f8fafc; color:var(--text-main); border:1px solid var(--border-color);">← Tuần trước</a>
                     <a href="manual_schedule.php?class_id=<?= (int)$selectedClass['id'] ?>&week_number=<?= $currentWeekNumber ?>&week_year=<?= $currentYear ?>" class="btn" style="background:#f8fafc; color:var(--text-main); border:1px solid var(--border-color);">Tuần hiện tại</a>
-                    <a href="manual_schedule.php?class_id=<?= (int)$selectedClass['id'] ?>&week_number=<?= min(53, $selectedWeekNumber + 1) ?>&week_year=<?= $selectedYear ?>" class="btn" style="background:#f8fafc; color:var(--text-main); border:1px solid var(--border-color);">Tuần sau ▶</a>
+                    <a href="manual_schedule.php?class_id=<?= (int)$selectedClass['id'] ?>&week_number=<?= min(53, $selectedWeekNumber + 1) ?>&week_year=<?= $selectedYear ?>" class="btn" style="background:#f8fafc; color:var(--text-main); border:1px solid var(--border-color);">Tuần sau →</a>
                 </div>
             </div>
 
@@ -221,7 +219,7 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
         <div class="modal-content">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                 <strong id="modal-title">Đổi lịch buổi học</strong>
-                <button type="button" class="btn-delete" onclick="closeModal()" style="padding:4px 8px;">✕</button>
+                <button type="button" class="btn-delete" onclick="closeModal()" style="padding:4px 8px;">×</button>
             </div>
             <form method="POST" class="form-group" style="margin-bottom:0;">
                 <input type="hidden" name="class_id" id="modal-class-id">
@@ -261,7 +259,6 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
     <script>
         const filterForm = document.getElementById('schedule-filter-form');
         const classSelect = document.getElementById('class_id');
-        const weekInput = document.getElementById('week_number');
 
         function submitFilter() { if (filterForm) filterForm.submit(); }
         if (classSelect) classSelect.addEventListener('change', submitFilter);

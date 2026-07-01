@@ -8,48 +8,96 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 $message = '';
-$attendanceDate = isset($_GET['date']) ? $_GET['date'] : date('Y-m-d');
+$postedDate = $_POST['date'] ?? null;
+$requestedDate = $_GET['date'] ?? null;
+$attendanceDate = is_string($postedDate) && isValidDateString($postedDate)
+    ? $postedDate
+    : (is_string($requestedDate) && isValidDateString($requestedDate) ? $requestedDate : date('Y-m-d'));
+$selectedClassId = (int)($_GET['class_id'] ?? $_POST['class_id'] ?? 0);
+$currentUserId = (int)($_SESSION['user_id'] ?? 0);
 
-// Xử lý lưu điểm danh khi bấm nút lưu
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_attendance_v2'])) {
-    $attendanceData = $_POST['attendance_data'] ?? []; // Mảng chứa [class_id][student_id] => status
-    $slotsData = $_POST['slot_time_data'] ?? [];     // Mảng chứa [class_id] => slot_time
+function canTakeAttendanceForClass(PDO $db, int $classId, string $attendanceDate, int $userId): bool {
+    if ($classId <= 0 || $userId <= 0 || !isValidDateString($attendanceDate)) {
+        return false;
+    }
 
-    if (!empty($attendanceData)) {
-        foreach ($attendanceData as $classId => $students) {
-            $slotTime = $slotsData[$classId] ?? 'Ca học';
-            foreach ($students as $studentId => $status) {
-                // Xóa bản ghi cũ của học viên này trong ngày/lớp này nếu có
-                $db->prepare("DELETE FROM attendance WHERE class_id = ? AND student_id = ? AND attendance_date = ?")
-                   ->execute([$classId, $studentId, $attendanceDate]);
+    $classStmt = $db->prepare("SELECT * FROM classes WHERE id = ? AND status = 'Active' LIMIT 1");
+    $classStmt->execute([$classId]);
+    $class = $classStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$class) {
+        return false;
+    }
 
-                // Thêm bản ghi điểm danh mới
-                $stmt = $db->prepare("INSERT INTO attendance (class_id, student_id, attendance_date, slot_time, status) VALUES (?, ?, ?, ?, ?)");
-                $stmt->execute([$classId, $studentId, $attendanceDate, $slotTime, $status]);
-            }
+    $overrideStmt = $db->prepare("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides WHERE class_id = ?");
+    $overrideStmt->execute([$classId]);
+
+    foreach (buildClassSessionDates($class, $overrideStmt->fetchAll(PDO::FETCH_ASSOC)) as $session) {
+        if (($session['display_date'] ?? '') !== $attendanceDate) {
+            continue;
         }
-        $message = "<p class='success'>✓ Đã lưu sổ điểm danh ngày " . date('d/m/Y', strtotime($attendanceDate)) . " thành công! Lịch tịnh tiến bù buổi đã tự động đồng bộ.</p>";
+
+        $assignedUserId = (int)($session['assigned_user_id'] ?? $class['assigned_user_id'] ?? 0);
+        if ($assignedUserId === $userId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_attendance_class'])) {
+    $selectedClassId = (int)($_POST['class_id'] ?? 0);
+    $slotTime = trim($_POST['slot_time'] ?? 'Ca học');
+    $attendanceData = $_POST['attendance_data'] ?? [];
+
+    if (!canTakeAttendanceForClass($db, $selectedClassId, $attendanceDate, $currentUserId)) {
+        $message = "<p class='error'>Bạn không có quyền điểm danh lớp này. Chỉ giáo viên được gán cho buổi học mới được điểm danh.</p>";
+        $selectedClassId = 0;
+    } elseif ($selectedClassId > 0 && !empty($attendanceData)) {
+        foreach ($attendanceData as $studentId => $status) {
+            $studentId = (int)$studentId;
+            $status = $status === 'Absent' ? 'Absent' : 'Present';
+
+            $db->prepare("DELETE FROM attendance WHERE class_id = ? AND student_id = ? AND attendance_date = ?")
+               ->execute([$selectedClassId, $studentId, $attendanceDate]);
+
+            $stmt = $db->prepare("INSERT INTO attendance (class_id, student_id, attendance_date, slot_time, status) VALUES (?, ?, ?, ?, ?)");
+            $stmt->execute([$selectedClassId, $studentId, $attendanceDate, $slotTime, $status]);
+        }
+
+        $message = "<p class='success'>Đã lưu điểm danh lớp ngày " . date('d/m/Y', strtotime($attendanceDate)) . " thành công.</p>";
+    } else {
+        $message = "<p class='error'>Vui lòng chọn lớp và học viên cần điểm danh.</p>";
     }
 }
 
-// 1. Lấy toàn bộ danh sách lớp học đang Active
 $classes = $db->query("SELECT * FROM classes WHERE status = 'Active'")->fetchAll(PDO::FETCH_ASSOC);
-
-// 2. Lấy toàn bộ cấu hình ghi đè lịch thủ công
 $overrideRows = $db->query("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides")->fetchAll(PDO::FETCH_ASSOC);
-
-// 3. Lấy danh sách cấu hình định nghĩa Ca dạy trong hệ thống
 $slotsDefinitions = getTeachingSlotOptions($db);
+$users = $db->query("SELECT id, username, full_name FROM users")->fetchAll(PDO::FETCH_ASSOC);
 
-// 4. Tìm kiếm tự động xem hôm nay có những lớp nào học
+$userMap = [];
+foreach ($users as $user) {
+    $userMap[(int)$user['id']] = $user['full_name'] ?: $user['username'];
+}
+
+$studentCountByClass = [];
+foreach ($db->query("SELECT class_id, COUNT(*) AS total FROM student_class GROUP BY class_id") as $row) {
+    $studentCountByClass[(int)$row['class_id']] = (int)$row['total'];
+}
+
+$attendanceCountByClass = [];
+$attendanceCountStmt = $db->prepare("SELECT class_id, COUNT(*) AS total FROM attendance WHERE attendance_date = ? GROUP BY class_id");
+$attendanceCountStmt->execute([$attendanceDate]);
+foreach ($attendanceCountStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+    $attendanceCountByClass[(int)$row['class_id']] = (int)$row['total'];
+}
+
 $todayClasses = [];
 foreach ($classes as $class) {
     $effectiveSessions = buildClassSessionDates($class, $overrideRows);
     foreach ($effectiveSessions as $session) {
-        // Nếu ca học trùng khớp với ngày đang chọn điểm danh
         if ($session['display_date'] === $attendanceDate) {
-            
-            // Tìm mã ca học (S1, S2, C1...) tương ứng
             $slotCode = 'Khác';
             foreach ($slotsDefinitions as $slotItem) {
                 if (strpos($session['display_slot'], $slotItem['slot_code']) === 0) {
@@ -58,90 +106,111 @@ foreach ($classes as $class) {
                 }
             }
 
+            $classId = (int)$class['id'];
+            $assignedUserId = (int)($session['assigned_user_id'] ?? $class['assigned_user_id'] ?? 0);
+            if ($assignedUserId !== $currentUserId) {
+                continue;
+            }
+
             $todayClasses[] = [
-                'class_id' => $class['id'],
+                'class_id' => $classId,
                 'class_name' => $class['class_name'],
                 'slot_code' => $slotCode,
-                'slot_label' => $session['display_slot']
+                'slot_label' => $session['display_slot'],
+                'teacher_name' => $userMap[$assignedUserId] ?? 'Chưa gán',
+                'student_count' => $studentCountByClass[$classId] ?? 0,
+                'attendance_count' => $attendanceCountByClass[$classId] ?? 0,
             ];
         }
     }
 }
 
-// 5. Sắp xếp danh sách lớp học tự động tìm được theo thứ tự ca học tăng dần (S1 -> S2 -> C1...)
-usort($todayClasses, function($a, $b) {
-    return strcmp($a['slot_code'], $b['slot_code']);
+usort($todayClasses, static function($a, $b) {
+    $slotCompare = strcmp($a['slot_code'], $b['slot_code']);
+    return $slotCompare !== 0 ? $slotCompare : strcmp($a['class_name'], $b['class_name']);
 });
+
+$selectedClassInfo = null;
+foreach ($todayClasses as $classInfo) {
+    if ((int)$classInfo['class_id'] === $selectedClassId) {
+        $selectedClassInfo = $classInfo;
+        break;
+    }
+}
+
+$studentsInSelectedClass = [];
+$attendanceStatusByStudent = [];
+
+if ($selectedClassInfo) {
+    $studentStmt = $db->prepare("
+        SELECT s.id, s.student_name, s.phone
+        FROM student_class sc
+        JOIN students s ON s.id = sc.student_id
+        WHERE sc.class_id = ?
+        ORDER BY s.student_name ASC
+    ");
+    $studentStmt->execute([$selectedClassId]);
+    $studentsInSelectedClass = $studentStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $attendanceStmt = $db->prepare("
+        SELECT student_id, status
+        FROM attendance
+        WHERE attendance_date = ? AND class_id = ?
+    ");
+    $attendanceStmt->execute([$attendanceDate, $selectedClassId]);
+    foreach ($attendanceStmt->fetchAll(PDO::FETCH_ASSOC) as $attendanceRow) {
+        $attendanceStatusByStudent[(int)$attendanceRow['student_id']] = $attendanceRow['status'];
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
-    <title>Điểm Danh Học Viên Tự Động</title>
+    <title>Điểm Danh Học Viên</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../CSS/style.css">
+    <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
     <style>
-        .attendance-section { margin-bottom: 30px; background: #fff; padding: 20px; border-radius: var(--radius-md); border: 1px solid var(--border-color); box-shadow: var(--shadow-sm); }
-        .attendance-class-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--primary-light); padding-bottom: 10px; margin-bottom: 15px; }
-        .attendance-class-title { font-size: 1.1rem; color: var(--text-main); font-weight: 700; }
-        .attendance-slot-badge { background: var(--primary-light); color: var(--primary); padding: 4px 10px; border-radius: 20px; font-weight: 600; font-size: 0.85rem; }
-        
-        /* Style Dropbox trạng thái điểm danh */
-        .attendance-select { 
-            padding: 8px 12px; 
-            border-radius: var(--radius-sm); 
-            border: 1px solid var(--border-color); 
-            font-size: 0.9rem; 
-            background: #fff; 
-            cursor: pointer; 
-            font-weight: 600;
-            width: 180px;
+        .attendance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+        .attendance-class-card { position: relative; background: #fff; border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 18px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 14px; }
+        .attendance-class-card:hover { border-color: var(--primary); box-shadow: var(--shadow-md); }
+        .attendance-card-title { margin: 0; color: var(--primary); font-size: 1.05rem; }
+        .attendance-done-badge { position: absolute; top: 12px; right: 12px; background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; border-radius: 999px; padding: 5px 10px; font-size: 0.78rem; font-weight: 800; }
+        .attendance-meta-grid { display: grid; gap: 8px; }
+        .attendance-meta-row { display: flex; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: 0.92rem; }
+        .attendance-meta-row strong { color: var(--text-main); text-align: right; }
+        .attendance-slot-badge { display: inline-flex; width: fit-content; background: var(--primary-light); color: var(--primary); padding: 5px 10px; border-radius: 999px; font-weight: 700; font-size: 0.85rem; }
+        .attendance-section { margin-bottom: 24px; background: #fff; padding: 20px; border-radius: var(--radius-md); border: 1px solid var(--border-color); box-shadow: var(--shadow-sm); }
+        .attendance-class-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; border-bottom: 2px solid var(--primary-light); padding-bottom: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+        .attendance-class-title { font-size: 1.15rem; color: var(--text-main); font-weight: 700; }
+        .attendance-status-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; min-width: 220px; }
+        .attendance-status-option input { position: absolute; opacity: 0; pointer-events: none; }
+        .attendance-status-option span { display: flex; align-items: center; justify-content: center; min-height: 38px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: #fff; color: var(--text-muted); cursor: pointer; font-weight: 700; font-size: 0.9rem; transition: all 0.2s ease; box-sizing: border-box; }
+        .attendance-status-option input:checked + .status-present { color: #065f46; background-color: #d1fae5; border-color: #a7f3d0; }
+        .attendance-status-option input:checked + .status-absent { color: #b91c1c; background-color: #fee2e2; border-color: #fca5a5; }
+        @media (max-width: 760px) {
+            .attendance-meta-row { flex-direction: column; gap: 2px; }
+            .attendance-meta-row strong { text-align: left; }
         }
-        .status-present { color: #065f46; background-color: #d1fae5 !important; border-color: #a7f3d0; }
-        .status-absent { color: #b91c1c; background-color: #fee2e2 !important; border-color: #fca5a5; }
     </style>
 </head>
 <body>
-    <div class="sidebar">
-        <div class="sidebar-brand">Lịch Dạy Nội Bộ</div>
-        <ul class="sidebar-menu">
-            <li><a href="../HTML/index.php">📅 Lịch Dạy Của Tôi</a></li>
-            <li><a href="view_others.php">🔍 Xem Lịch Người Khác</a></li>
-            <li><a href="add_class.php">➕ Thêm Lớp & Xếp Lịch</a></li>
-            <li><a href="manage_students.php">👤 Quản lý học viên</a></li>
-            <li class="active"><a href="attendance.php">✅ Điểm danh học viên</a></li>
-            <li><a href="student_stats.php">📊 Thống kê học viên</a></li>
-            <li><a href="manage_slots.php">🕒 Quản lý ca dạy</a></li>
-            <li><a href="manual_schedule.php">🗓 Xếp Lịch Thủ Công</a></li>
-            <?php if (($_SESSION['role'] ?? '') === 'admin'): ?>
-            <li><a href="admin_users.php">👤 Quản lý người dùng</a></li>
-            <?php endif; ?>
-        </ul>
-        <div class="sidebar-footer">
-            <div class="sidebar-user">
-                <div class="sidebar-user-label">Đăng nhập</div>
-                <div class="sidebar-user-name"><?= htmlspecialchars($_SESSION['display_name'] ?? $_SESSION['username'] ?? 'Người dùng') ?></div>
-            </div>
-            <a href="settings.php" class="btn" style="display:block; text-align:center; margin-bottom:10px; background:#1e293b; border:1px solid #334155;">⚙ Cài đặt</a>
-            <a href="logout.php" class="btn-delete" style="display: block; text-align: center;">Đăng xuất</a>
-        </div>
-    </div>
+    <?php require_once __DIR__ . '/sidebar.php'; ?>
 
     <div class="main-content">
         <div class="header-wrapper">
             <div>
-                <h2>Sổ Điểm Danh Tự Động Theo Ngày</h2>
-                <span style="font-size: 0.85rem; color: var(--text-muted);">Hệ thống tự nhận diện các ca học diễn ra trong ngày được chọn</span>
+                <h2>Điểm Danh Học Viên</h2>
+                <span style="font-size: 0.85rem; color: var(--text-muted);">Chọn ngày, xem danh sách lớp trong ngày rồi bấm vào lớp cần điểm danh</span>
             </div>
         </div>
 
         <?= $message ?>
 
-        <!-- Khu vực chọn ngày làm việc -->
         <div class="card" style="margin-bottom: 24px; padding: 20px;">
             <form method="GET" id="date-filter-form">
-                <div style="display: flex; align-items: center; gap: 15px;">
-                    <div style="flex: 1; max-width: 300px;">
+                <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 220px; max-width: 300px;">
                         <label style="display:block; margin-bottom:6px; font-weight:500;">Chọn ngày điểm danh:</label>
                         <input type="date" name="date" value="<?= htmlspecialchars($attendanceDate) ?>" onchange="this.form.submit()" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
                     </div>
@@ -152,87 +221,111 @@ usort($todayClasses, function($a, $b) {
             </form>
         </div>
 
-        <?php if (!empty($todayClasses)): ?>
+        <?php if ($selectedClassInfo): ?>
+            <div style="margin-bottom: 16px;">
+                <a class="btn" href="attendance.php?date=<?= urlencode($attendanceDate) ?>" style="background:#f8fafc; color:var(--text-main); border:1px solid var(--border-color); box-shadow:none;">← Quay lại danh sách lớp</a>
+            </div>
+
             <form method="POST">
-                <?php foreach ($todayClasses as $classInfo): 
-                    $cId = $classInfo['class_id'];
-                    // Lấy danh sách học viên thuộc lớp hiện tại
-                    $stmtSt = $db->prepare("SELECT s.* FROM students s JOIN student_class sc ON sc.student_id = s.id WHERE sc.class_id = ?");
-                    $stmtSt->execute([$cId]);
-                    $studentsInClass = $stmtSt->fetchAll(PDO::FETCH_ASSOC);
-                ?>
-                    <div class="attendance-section">
-                        <div class="attendance-class-header">
-                            <div class="attendance-class-title">Lớp: <span style="color: var(--primary);"><?= htmlspecialchars($classInfo['class_name']) ?></span></div>
-                            <div class="attendance-slot-badge">🕒 <?= htmlspecialchars($classInfo['slot_label']) ?></div>
+                <input type="hidden" name="class_id" value="<?= (int)$selectedClassInfo['class_id'] ?>">
+                <input type="hidden" name="date" value="<?= htmlspecialchars($attendanceDate) ?>">
+                <input type="hidden" name="slot_time" value="<?= htmlspecialchars($selectedClassInfo['slot_label']) ?>">
+
+                <div class="attendance-section">
+                    <div class="attendance-class-header">
+                        <div>
+                            <div class="attendance-class-title">Lớp: <span style="color: var(--primary);"><?= htmlspecialchars($selectedClassInfo['class_name']) ?></span></div>
+                            <div style="margin-top:8px; color:var(--text-muted);">
+                                Giáo viên: <strong style="color:var(--text-main);"><?= htmlspecialchars($selectedClassInfo['teacher_name']) ?></strong>
+                                · Học viên: <strong style="color:var(--text-main);"><?= (int)$selectedClassInfo['student_count'] ?></strong>
+                            </div>
                         </div>
+                        <div class="attendance-slot-badge"><?= htmlspecialchars($selectedClassInfo['slot_label']) ?></div>
+                    </div>
 
-                        <!-- Lưu trữ ngầm khung giờ hiện hành để truyền dữ liệu lên DB -->
-                        <input type="hidden" name="slot_time_data[<?= $cId ?>]" value="<?= htmlspecialchars($classInfo['slot_label']) ?>">
+                    <?php if (!empty($studentsInSelectedClass)): ?>
+                        <table class="admin-table" style="width: 100%; border: none; margin-top: 0;">
+                            <thead>
+                                <tr>
+                                    <th style="padding: 10px;">Học viên</th>
+                                    <th style="padding: 10px;">Số điện thoại</th>
+                                    <th style="padding: 10px; text-align: center; width: 300px;">Trạng thái điểm danh</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($studentsInSelectedClass as $st):
+                                    $oldStatus = $attendanceStatusByStudent[(int)$st['id']] ?? null;
+                                ?>
+                                <tr>
+                                    <td><strong><?= htmlspecialchars($st['student_name']) ?></strong></td>
+                                    <td><?= htmlspecialchars($st['phone']) ?></td>
+                                    <td style="text-align: center;">
+                                        <div class="attendance-status-options">
+                                            <label class="attendance-status-option">
+                                                <input type="radio" name="attendance_data[<?= (int)$st['id'] ?>]" value="Present" <?= $oldStatus !== 'Absent' ? 'checked' : '' ?>>
+                                                <span class="status-present">Đi học</span>
+                                            </label>
+                                            <label class="attendance-status-option">
+                                                <input type="radio" name="attendance_data[<?= (int)$st['id'] ?>]" value="Absent" <?= $oldStatus === 'Absent' ? 'checked' : '' ?>>
+                                                <span class="status-absent">Vắng</span>
+                                            </label>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    <?php else: ?>
+                        <p style="color: var(--text-muted); font-size: 0.9rem; font-style: italic; margin: 10px 0 0 0;">Lớp này hiện chưa có học viên nào.</p>
+                    <?php endif; ?>
+                </div>
 
-                        <?php if (!empty($studentsInClass)): ?>
-                            <table class="admin-table" style="width: 100%; border: none; margin-top: 0;">
-                                <thead>
-                                    <tr>
-                                        <th style="padding: 10px;">Học viên</th>
-                                        <th style="padding: 10px;">Số điện thoại</th>
-                                        <th style="padding: 10px; text-align: center; width: 300px;">Trạng thái điểm danh</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($studentsInClass as $st): 
-                                        // Kiểm tra trạng thái điểm danh cũ (nếu có)
-                                        $stmtOld = $db->prepare("SELECT status FROM attendance WHERE class_id = ? AND student_id = ? AND attendance_date = ?");
-                                        $stmtOld->execute([$cId, $st['id'], $attendanceDate]);
-                                        $oldStatus = $stmtOld->fetchColumn();
-                                        
-                                        // Gán class màu sắc dựa trên trạng thái hiện tại
-                                        $selectClass = ($oldStatus === 'Absent') ? 'status-absent' : 'status-present';
-                                    ?>
-                                    <tr>
-                                        <td><strong><?= htmlspecialchars($st['student_name']) ?></strong></td>
-                                        <td><?= htmlspecialchars($st['phone']) ?></td>
-                                        <td style="text-align: center;">
-                                            <!-- ĐÃ THAY ĐỔI: Chuyển đổi thành Dropbox select trạng thái màu sắc động -->
-                                            <select name="attendance_data[<?= $cId ?>][<?= $st['id'] ?>]" 
-                                                    class="attendance-select <?= $selectClass ?>" 
-                                                    onchange="updateSelectColor(this)">
-                                                <option value="Present" class="status-present" <?= $oldStatus !== 'Absent' ? 'selected' : '' ?>>▶ Đi học</option>
-                                                <option value="Absent" class="status-absent" <?= $oldStatus === 'Absent' ? 'selected' : '' ?>>✖ Vắng (Tự bù buổi)</option>
-                                            </select>
-                                        </td>
-                                    </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        <?php else: ?>
-                            <p style="color: var(--text-muted); font-size: 0.9rem; font-style: italic; margin: 10px 0 0 0;">Lớp này hiện chưa có học viên nào.</p>
+                <button type="submit" name="save_attendance_class" class="btn" style="width: 100%; padding: 14px; font-size: 1rem; font-weight: 600;">Lưu điểm danh lớp này</button>
+            </form>
+        <?php elseif (!empty($todayClasses)): ?>
+            <div class="attendance-grid">
+                <?php foreach ($todayClasses as $classInfo):
+                    $isAttendanceDone = (int)$classInfo['student_count'] > 0
+                        && (int)$classInfo['attendance_count'] >= (int)$classInfo['student_count'];
+                ?>
+                    <div class="attendance-class-card">
+                        <?php if ($isAttendanceDone): ?>
+                            <span class="attendance-done-badge">Đã điểm danh</span>
                         <?php endif; ?>
+                        <div>
+                            <span class="attendance-slot-badge"><?= htmlspecialchars($classInfo['slot_label']) ?></span>
+                            <h3 class="attendance-card-title" style="margin-top:12px;"><?= htmlspecialchars($classInfo['class_name']) ?></h3>
+                        </div>
+                        <div class="attendance-meta-grid">
+                            <div class="attendance-meta-row">
+                                <span>Giáo viên</span>
+                                <strong><?= htmlspecialchars($classInfo['teacher_name']) ?></strong>
+                            </div>
+                            <div class="attendance-meta-row">
+                                <span>Số lượng học viên</span>
+                                <strong><?= (int)$classInfo['student_count'] ?> học viên</strong>
+                            </div>
+                            <div class="attendance-meta-row">
+                                <span>Ca dạy</span>
+                                <strong><?= htmlspecialchars($classInfo['slot_label']) ?></strong>
+                            </div>
+                            <div class="attendance-meta-row">
+                                <span>Đã điểm danh</span>
+                                <strong><?= (int)$classInfo['attendance_count'] ?>/<?= (int)$classInfo['student_count'] ?></strong>
+                            </div>
+                        </div>
+                        <a class="btn" href="attendance.php?date=<?= urlencode($attendanceDate) ?>&class_id=<?= (int)$classInfo['class_id'] ?>" style="width:100%; box-sizing:border-box;">Điểm danh lớp này</a>
                     </div>
                 <?php endforeach; ?>
-
-                <button type="submit" name="save_attendance_v2" class="btn" style="width: 100%; padding: 14px; font-size: 1rem; font-weight: 600;">LƯU SỔ ĐIỂM DANH TOÀN BỘ CÁC CA TRONG NGÀY</button>
-            </form>
+            </div>
         <?php else: ?>
             <div class="card" style="text-align: center; padding: 40px;">
-                <span style="font-size: 3rem;">🗓️</span>
+                <span style="font-size: 3rem;">📅</span>
                 <h3 style="margin-top: 15px; color: var(--text-muted);">Không có ca dạy nào diễn ra vào ngày <?= date('d/m/Y', strtotime($attendanceDate)) ?>.</h3>
                 <p style="color: var(--text-muted); font-size: 0.9rem;">Hệ thống tự động đồng bộ theo thời khóa biểu thực tế.</p>
             </div>
         <?php endif; ?>
     </div>
 
-    <!-- SCRIPT CHUYỂN ĐỔI MÀU SẮC ĐỘNG KHI THAY ĐỔI DROPBOX TRÊN GIAO DIỆN -->
-    <script>
-        function updateSelectColor(selectElement) {
-            if (selectElement.value === 'Absent') {
-                selectElement.classList.remove('status-present');
-                selectElement.classList.add('status-absent');
-            } else {
-                selectElement.classList.remove('status-absent');
-                selectElement.classList.add('status-present');
-            }
-        }
-    </script>
 </body>
 </html>

@@ -8,20 +8,31 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 if ($_SESSION['role'] === 'admin') {
-    $users = $db->query("SELECT id, username FROM users WHERE status = 'active' AND id != " . (int)$_SESSION['user_id'] . " ORDER BY username ASC")->fetchAll(PDO::FETCH_ASSOC);
+    $users = $db->query("SELECT id, username FROM users WHERE status = 'active' ORDER BY username ASC")->fetchAll(PDO::FETCH_ASSOC);
 } else {
-    $stmt = $db->prepare("SELECT u.id, u.username FROM users u JOIN user_view_permissions p ON p.viewed_user_id = u.id WHERE p.viewer_id = ? AND u.status = 'active' AND u.id != ? ORDER BY u.username ASC");
+    $stmt = $db->prepare("
+        SELECT DISTINCT u.id, u.username
+        FROM users u
+        LEFT JOIN user_view_permissions p ON p.viewed_user_id = u.id AND p.viewer_id = ?
+        WHERE u.status = 'active'
+          AND (u.id = ? OR p.viewer_id IS NOT NULL)
+        ORDER BY u.username ASC
+    ");
     $stmt->execute([$_SESSION['user_id'], $_SESSION['user_id']]);
     $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
 $target_user_id = isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0;
-if ($target_user_id === 0 && count($users) > 0) {
-    $target_user_id = (int)$users[0]['id'];
-}
 $target_username = "";
 foreach ($users as $u) {
-    if ((int)$u['id'] === $target_user_id) { $target_username = $u['username']; break; }
+    if ((int)$u['id'] === $target_user_id) {
+        $target_username = $u['username'];
+        break;
+    }
+}
+if (($target_user_id === 0 || $target_username === "") && count($users) > 0) {
+    $target_user_id = (int)$users[0]['id'];
+    $target_username = $users[0]['username'];
 }
 ?>
 <!DOCTYPE html>
@@ -30,36 +41,24 @@ foreach ($users as $u) {
     <meta charset="UTF-8">
     <title>Xem Lịch Nhân Sự Khác</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../CSS/style.css">
+    <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
 </head>
 <body>
-
-    <div class="sidebar">
-        <div class="sidebar-brand">Lịch Dạy Nội Bộ</div>
-        <ul class="sidebar-menu">
-            <li><a href="../HTML/index.php">📅 Lịch Dạy Của Tôi</a></li>
-            <li class="active"><a href="view_others.php">🔍 Xem Lịch Người Khác</a></li>
-            <li><a href="add_class.php">➕ Thêm Lớp & Xếp Lịch</a></li>
-            <li><a href="manage_students.php">👤 Quản lý học viên</a></li>
-            <li><a href="attendance.php">✅ Điểm danh học viên</a></li>
-            <li><a href="student_stats.php">📊 Thống kê học viên</a></li>
-            <li><a href="manage_slots.php">🕒 Quản lý ca dạy</a></li>
-            <li><a href="manual_schedule.php">🗓 Xếp Lịch Thủ Công</a></li>
-            <?php if (($_SESSION['role'] ?? '') === 'admin'): ?>
-            <li><a href="admin_users.php">👤 Quản lý người dùng</a></li>
-            <?php endif; ?>
-        </ul>
-        <div class="sidebar-footer">
-            <div class="sidebar-user">
-                <div class="sidebar-user-label">Đăng nhập</div>
-                <div class="sidebar-user-name"><?= htmlspecialchars($_SESSION['display_name'] ?? $_SESSION['username'] ?? 'Người dùng') ?></div>
-            </div>
-            <a href="settings.php" class="btn" style="display:block; text-align:center; margin-bottom:10px; background:#1e293b; border:1px solid #334155;">⚙ Cài đặt</a>
-            <a href="logout.php" class="btn-delete" style="display: block; text-align: center;">Đăng xuất</a>
-        </div>
-    </div>
+    <?php require_once __DIR__ . '/sidebar.php'; ?>
 
     <div class="main-content">
+        <div id="student-info-modal" class="modal" style="display:none;">
+            <div class="modal-content modal-wide student-modal-card">
+                <div class="student-modal-header">
+                    <strong id="student-modal-title" class="student-modal-title">Danh sách học viên</strong>
+                    <button type="button" class="student-modal-x" onclick="closeStudentInfoModal()" aria-label="Đóng">×</button>
+                </div>
+                <div id="student-modal-body">
+                    <div class="student-list-empty">Đang tải thông tin học viên...</div>
+                </div>
+            </div>
+        </div>
+
         <div class="header-wrapper">
             <div>
                 <h2>Xem Lịch Giảng Viên Khác</h2>
@@ -86,7 +85,7 @@ foreach ($users as $u) {
             <h3 style="margin-top: 40px; border-top: 1px solid var(--border-color); padding-top: 24px;">
                 📅 Đang xem thời khóa biểu của: <span style="color: var(--primary);"><?= htmlspecialchars($target_username) ?></span>
             </h3>
-            
+
             <div class="navigation">
                 <button id="btn-prev" class="btn" style="background-color: #f1f5f9; color: var(--text-main); border: 1px solid var(--border-color); box-shadow:none;">◀ Tuần trước</button>
                 <span id="current-week-text" class="current-week">Đang tải lịch tuần...</span>
@@ -124,6 +123,85 @@ foreach ($users as $u) {
         let freeSlotsExpanded = false;
         let monthPreviewExpanded = false;
 
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, char => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            }[char]));
+        }
+
+        function jsArg(value) {
+            return escapeHtml(JSON.stringify(String(value ?? '')));
+        }
+
+        function closeStudentInfoModal() {
+            document.getElementById('student-info-modal').style.display = 'none';
+        }
+
+        function studentStatusClass(status) {
+            if (status === 'Present') return 'status-present';
+            if (status === 'Absent') return 'status-absent';
+            return 'status-expected';
+        }
+
+        function studentPrimaryStatusLabel(student) {
+            return student.attendance_status === 'Expected' ? 'Dự kiến (Chưa học)' : (student.status_label || 'Dự kiến');
+        }
+
+        function renderStudentInfo(data) {
+            const title = document.getElementById('student-modal-title');
+            const body = document.getElementById('student-modal-body');
+            const classInfo = data.class || {};
+            const students = data.students || [];
+            title.innerText = 'Danh sách học viên';
+
+            const rows = students.map(student => `
+                <div class="student-simple-row">
+                    <div class="student-simple-main">
+                        <div class="student-simple-title">
+                            <span class="student-status-badge ${studentStatusClass(student.attendance_status)}">${escapeHtml(studentPrimaryStatusLabel(student))}</span>
+                            <span class="student-simple-name">${escapeHtml(student.name)}</span>
+                        </div>
+                        <div class="student-simple-class">Lớp học: ${escapeHtml(classInfo.name || '')}</div>
+                    </div>
+                    <span class="student-status-badge student-status-pill ${studentStatusClass(student.attendance_status)}">${escapeHtml(student.status_label || 'Dự kiến')}</span>
+                </div>
+            `).join('');
+
+            body.innerHTML = `
+                <div class="student-simple-modal">
+                    ${rows || '<div class="student-list-empty">Lớp này chưa có học viên.</div>'}
+                    <div class="student-modal-footer">
+                        <button type="button" class="student-modal-close" onclick="closeStudentInfoModal()">Đóng</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function openStudentInfoModal(classId, className, sessionDate) {
+            const modal = document.getElementById('student-info-modal');
+            const title = document.getElementById('student-modal-title');
+            const body = document.getElementById('student-modal-body');
+            title.innerText = 'Danh sách học viên';
+            body.innerHTML = '<div class="student-list-empty">Đang tải thông tin học viên...</div>';
+            modal.style.display = 'flex';
+
+            try {
+                const response = await fetch(`class_students_api.php?class_id=${encodeURIComponent(classId)}&session_date=${encodeURIComponent(sessionDate || '')}&user_id=${encodeURIComponent(targetUserId)}`);
+                if (!response.ok) {
+                    body.innerHTML = '<div class="student-list-empty">Không tải được danh sách học viên.</div>';
+                    return;
+                }
+                renderStudentInfo(await response.json());
+            } catch (error) {
+                console.error('Student details error:', error);
+                body.innerHTML = '<div class="student-list-empty">Không tải được danh sách học viên.</div>';
+            }
+        }
+
         function setFreeSlotsVisibility(isVisible) {
             const summary = document.getElementById('free-slots-summary');
             const button = document.getElementById('toggle-free-slots');
@@ -149,23 +227,26 @@ foreach ($users as $u) {
                     return;
                 }
                 const data = await response.json();
-                
+
                 document.getElementById('current-week-text').innerText = `Tuần: ${data.monday} - ${data.sunday}`;
-                
+
                 const headerRow = document.getElementById('table-header');
                 headerRow.innerHTML = '<th style="background-color: #e2e8f0; font-weight: bold; width: 140px;">Ca dạy</th>';
                 data.dates.forEach(item => {
-                    headerRow.innerHTML += `<th>${item.day_name}<small>${item.date_formatted}</small></th>`;
+                    headerRow.innerHTML += `<th>${escapeHtml(item.day_name)}<small>${escapeHtml(item.date_formatted)}</small></th>`;
                 });
 
                 const bodyRow = document.getElementById('table-body');
                 bodyRow.innerHTML = '';
 
-                // FIX SỬA LỖI ĐOẠN NÀY: Duyệt render động theo slots_definitions nhận từ API
                 data.slots_definitions.forEach(slotItem => {
-                    let rowHtml = `<tr>`;
-                    rowHtml += `<td style="background-color: #f8fafc; font-weight: 600; text-align: left; vertical-align: middle; border-right: 2px solid var(--border-color); color: var(--primary); padding: 10px; font-size: 0.85rem;">${slotItem.slot_label}</td>`;
-                    
+                    const rowHasSessions = data.dates.some(item => {
+                        const daySessions = data.schedule[item.date_raw] || [];
+                        return daySessions.some(s => s.slot_code === slotItem.slot_code);
+                    });
+                    let rowHtml = `<tr class="${rowHasSessions ? '' : 'empty-slot-row'}">`;
+                    rowHtml += `<td class="slot-label-cell">${escapeHtml(slotItem.slot_label)}</td>`;
+
                     data.dates.forEach(item => {
                         let cellContent = '';
                         const daySessions = data.schedule[item.date_raw] || [];
@@ -174,17 +255,18 @@ foreach ($users as $u) {
                         if (matchedSessions.length > 0) {
                             matchedSessions.forEach(session => {
                                 cellContent += `
-                                    <div class="session-card" style="background-color: #f8fafc; border-left-color: var(--text-muted); margin-bottom:6px;">
-                                        <div class="class-name" style="color: #334155;">${session.name}</div>
-                                        <div class="class-time" style="background: #e2e8f0; color: #475569;">${session.time}</div>
+                                    <div class="session-card" style="cursor:pointer; margin-bottom:6px;" onclick='openStudentInfoModal(${jsArg(session.class_id || '')}, ${jsArg(session.name)}, ${jsArg(item.date_raw)})'>
+                                        <div class="class-name">${escapeHtml(session.teacher || 'Chưa gán')}</div>
+                                        <div class="class-time">${escapeHtml(session.name)}</div>
+                                        <div class="class-meta">Dự kiến: ${escapeHtml(session.student_count ?? 0)} HV</div>
                                     </div>`;
                             });
                         } else {
                             cellContent = '<span class="empty-day">·</span>';
                         }
-                        rowHtml += `<td>${cellContent}</td>`;
+                        rowHtml += `<td class="${matchedSessions.length > 0 ? '' : 'empty-cell'}">${cellContent}</td>`;
                     });
-                    
+
                     rowHtml += `</tr>`;
                     bodyRow.innerHTML += rowHtml;
                 });
@@ -200,7 +282,7 @@ foreach ($users as $u) {
                             hasFreeSlots = true;
                             const card = document.createElement('div');
                             card.className = 'permission-card';
-                            card.innerHTML = `<strong>${item.day_name} ${item.date_formatted}</strong><div class="permission-group" style="margin-top:8px;">${freeSlots.map(slot => `<label><input type="checkbox" checked disabled>${slot}</label>`).join('')}</div>`;
+                            card.innerHTML = `<strong>${escapeHtml(item.day_name)} ${escapeHtml(item.date_formatted)}</strong><div class="permission-group" style="margin-top:8px;">${freeSlots.map(slot => `<label><input type="checkbox" checked disabled>${escapeHtml(slot)}</label>`).join('')}</div>`;
                             freeSlotSummary.appendChild(card);
                         }
                     });
@@ -223,7 +305,7 @@ foreach ($users as $u) {
                         entries.forEach(([date, items]) => {
                             const card = document.createElement('div');
                             card.className = 'permission-card';
-                            card.innerHTML = `<strong>${date}</strong><div class="permission-group" style="margin-top:8px;">${items.map(item => `<label><input type="checkbox" checked disabled>${item.name} • ${item.time}</label>`).join('')}</div>`;
+                            card.innerHTML = `<strong>${escapeHtml(date)}</strong><div class="permission-group" style="margin-top:8px;">${items.map(item => `<label><input type="checkbox" checked disabled>${escapeHtml(item.name)} - ${escapeHtml(item.time)} - ${escapeHtml(item.teacher || 'Chưa gán')} - ${escapeHtml(item.student_count ?? 0)} học viên</label>`).join('')}</div>`;
                             monthPreviewSummary.appendChild(card);
                         });
                     } else {
@@ -246,6 +328,9 @@ foreach ($users as $u) {
             document.getElementById('toggle-month-preview').addEventListener('click', () => {
                 monthPreviewExpanded = !monthPreviewExpanded;
                 setMonthPreviewVisibility(monthPreviewExpanded);
+            });
+            document.getElementById('student-info-modal').addEventListener('click', function(e) {
+                if (e.target === this) closeStudentInfoModal();
             });
             fetchSchedule(currentWeekOffset);
         }

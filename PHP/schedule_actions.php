@@ -3,47 +3,61 @@ session_start();
 require_once 'config.php';
 
 if (!isset($_SESSION['user_id'])) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'message' => 'Unauthorized']);
-    exit;
+    jsonResponse(['success' => false, 'message' => 'Unauthorized'], 401);
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(405);
-    echo json_encode(['success' => false, 'message' => 'Method not allowed']);
-    exit;
+    jsonResponse(['success' => false, 'message' => 'Method not allowed'], 405);
 }
 
 $action = $_POST['action'] ?? '';
+$classId = (int)($_POST['class_id'] ?? 0);
+$sessionDate = trim($_POST['session_date'] ?? '');
 
 if ($action === 'delete') {
-    $classId = (int)($_POST['class_id'] ?? 0);
-    $sessionDate = trim($_POST['session_date'] ?? '');
-    if ($classId > 0 && $sessionDate !== '') {
-        $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, action_type) VALUES (?, ?, ?)');
-        $stmt->execute([$classId, $sessionDate, 'delete']);
-        echo json_encode(['success' => true, 'message' => 'Đã xóa lịch của ngày này và đẩy các buổi sau về phía sau']);
-    } else {
-        echo json_encode(['success' => false, 'message' => 'Thiếu thông tin']);
+    if ($classId <= 0 || !isValidDateString($sessionDate)) {
+        jsonResponse(['success' => false, 'message' => 'Thieu hoac sai thong tin ngay hoc.'], 422);
     }
-    exit;
+
+    $notificationContext = getScheduleNotificationContext($db, $classId, $sessionDate);
+    $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, action_type) VALUES (?, ?, ?)');
+    $stmt->execute([$classId, $sessionDate, 'delete']);
+    notifyScheduleChanged($db, 'delete', $notificationContext);
+    jsonResponse(['success' => true, 'message' => 'Da xoa lich cua ngay nay va day cac buoi sau ve phia sau.']);
 }
 
 if ($action === 'move') {
-    $classId = (int)($_POST['class_id'] ?? 0);
     $newDate = trim($_POST['new_date'] ?? '');
     $newSlot = trim($_POST['new_slot'] ?? '');
     $newUserChanges = isset($_POST['new_user_id']) ? (int)$_POST['new_user_id'] : 0;
-    $sessionDate = trim($_POST['session_date'] ?? '');
-    
-    if ($classId > 0 && $sessionDate !== '' && $newDate !== '' && $newSlot !== '') {
-        $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type) VALUES (?, ?, ?, ?, ?, ?)');
-        $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move']);
-        echo json_encode(['success' => true, 'message' => 'Đã đổi lịch và cập nhật thông tin giảng viên dạy thay thành công']);
-    } else {
-        echo json_encode(['success' => false, 'message' => 'Thiếu thông tin']);
+
+    if ($classId <= 0 || !isValidDateString($sessionDate) || !isValidDateString($newDate) || $newSlot === '') {
+        jsonResponse(['success' => false, 'message' => 'Thieu hoac sai thong tin doi lich.'], 422);
     }
-    exit;
+
+    $classStmt = $db->prepare('SELECT * FROM classes WHERE id = ? LIMIT 1');
+    $classStmt->execute([$classId]);
+    $targetClass = $classStmt->fetch(PDO::FETCH_ASSOC);
+    if ($targetClass && (($targetClass['class_type'] ?? 'fixed') === 'one_on_one')) {
+        $teacherId = $newUserChanges > 0 ? $newUserChanges : (int)($targetClass['assigned_user_id'] ?? 0);
+        $conflict = findTeacherScheduleConflict($db, $newDate, $newSlot, $teacherId, $classId);
+        if ($conflict) {
+            jsonResponse([
+                'success' => false,
+                'message' => 'Lop 1-1 bi trung lich voi lop ' . $conflict['class_name'] . ' vao ngay ' . date('d/m/Y', strtotime($conflict['date'])) . ' (' . $conflict['slot'] . ').'
+            ], 422);
+        }
+    }
+
+    $notificationContext = getScheduleNotificationContext($db, $classId, $sessionDate);
+    $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type) VALUES (?, ?, ?, ?, ?, ?)');
+    $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move']);
+    notifyScheduleChanged($db, 'move', $notificationContext, [
+        'new_date' => $newDate,
+        'new_slot' => $newSlot,
+        'new_user_id' => $newUserChanges,
+    ]);
+    jsonResponse(['success' => true, 'message' => 'Da doi lich va cap nhat giang vien day thay thanh cong.']);
 }
 
-echo json_encode(['success' => false, 'message' => 'Unknown action']);
+jsonResponse(['success' => false, 'message' => 'Unknown action'], 400);

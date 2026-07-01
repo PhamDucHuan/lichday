@@ -19,20 +19,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($slotCode !== '' && $slotLabel !== '' && $startTime !== '' && $endTime !== '') {
             $stmt = $db->prepare('INSERT INTO teaching_slots (slot_code, slot_label, start_time, end_time, is_active) VALUES (?, ?, ?, ?, 1)');
             $stmt->execute([$slotCode, $slotLabel, $startTime, $endTime]);
-            $message = "<p class='success'>✓ Đã thêm ca dạy mới.</p>";
+            $message = "<p class='success'>Đã thêm ca dạy mới.</p>";
         } else {
-            $message = "<p class='error'>⚠ Vui lòng điền đầy đủ thông tin.</p>";
+            $message = "<p class='error'>Vui lòng điền đầy đủ thông tin.</p>";
         }
     } elseif (isset($_POST['toggle_slot'])) {
         $id = (int)($_POST['slot_id'] ?? 0);
         $stmt = $db->prepare('UPDATE teaching_slots SET is_active = 1 - is_active WHERE id = ?');
         $stmt->execute([$id]);
-        $message = "<p class='success'>✓ Đã đổi trạng thái ca dạy.</p>";
+        $message = "<p class='success'>Đã đổi trạng thái ca dạy.</p>";
     } elseif (isset($_POST['delete_slot'])) {
         $id = (int)($_POST['slot_id'] ?? 0);
         $stmt = $db->prepare('DELETE FROM teaching_slots WHERE id = ?');
         $stmt->execute([$id]);
-        $message = "<p class='success'>✓ Đã xóa ca dạy.</p>";
+        $message = "<p class='success'>Đã xóa ca dạy.</p>";
     }
 }
 
@@ -44,39 +44,16 @@ $slots = $db->query('SELECT * FROM teaching_slots ORDER BY start_time, slot_code
     <meta charset="UTF-8">
     <title>Quản lý ca dạy</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../CSS/style.css">
+    <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
 </head>
 <body>
-    <div class="sidebar">
-        <div class="sidebar-brand">Lịch Dạy Nội Bộ</div>
-        <ul class="sidebar-menu">
-            <li><a href="../HTML/index.php">📅 Lịch Dạy Của Tôi</a></li>
-            <li><a href="view_others.php">🔍 Xem Lịch Người Khác</a></li>
-            <li><a href="add_class.php">➕ Thêm Lớp & Xếp Lịch</a></li>
-            <li><a href="manage_students.php">👤 Quản lý học viên</a></li>
-            <li><a href="attendance.php">✅ Điểm danh học viên</a></li>
-            <li class="active"><a href="student_stats.php">📊 Thống kê học viên</a></li>
-            <li class="active"><a href="manage_slots.php">🕒 Quản lý ca dạy</a></li>
-            <li><a href="manual_schedule.php">🗓 Xếp Lịch Thủ Công</a></li>
-            <?php if (($_SESSION['role'] ?? '') === 'admin'): ?>
-            <li><a href="admin_users.php">👤 Quản lý người dùng</a></li>
-            <?php endif; ?>
-        </ul>
-        <div class="sidebar-footer">
-            <div class="sidebar-user">
-                <div class="sidebar-user-label">Đăng nhập</div>
-                <div class="sidebar-user-name"><?= htmlspecialchars($_SESSION['display_name'] ?? $_SESSION['username'] ?? 'Người dùng') ?></div>
-            </div>
-            <a href="settings.php" class="btn" style="display:block; text-align:center; margin-bottom:10px; background:#1e293b; border:1px solid #334155;">⚙ Cài đặt</a>
-            <a href="logout.php" class="btn-delete" style="display: block; text-align: center;">Đăng xuất</a>
-        </div>
-    </div>
+    <?php require_once __DIR__ . '/sidebar.php'; ?>
 
     <div class="main-content">
         <div class="header-wrapper">
             <div>
                 <h2>Quản lý ca dạy</h2>
-                <span style="font-size: 0.85rem; color: var(--text-muted);">Thêm, bật/tắt hoặc xóa các ca học khác nửa.</span>
+                <span style="font-size: 0.85rem; color: var(--text-muted);">Thêm, bật/tắt hoặc xóa các ca học khác nhau.</span>
             </div>
         </div>
 

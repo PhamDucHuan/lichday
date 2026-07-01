@@ -18,41 +18,22 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - Lịch Dạy Của Tôi</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../CSS/style.css">
+    <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
 </head>
 <body>
-   <div class="sidebar">
-        <div class="sidebar-brand">Lịch Dạy Nội Bộ</div>
-        <ul class="sidebar-menu">
-            <li class="active"><a href="index.php">📅 Lịch Dạy Của Tôi</a></li>
-            <li><a href="../PHP/view_others.php">🔍 Xem Lịch Người Khác</a></li>
-            <li><a href="../PHP/add_class.php">➕ Thêm Lớp & Xếp Lịch</a></li>
-            <li><a href="../PHP/manage_students.php">👤 Quản lý học viên</a></li>
-            <li><a href="../PHP/attendance.php">✅ Điểm danh học viên</a></li>
-            <li><a href="../PHP/manage_slots.php">🕒 Quản lý ca dạy</a></li>
-            <li><a href="../PHP/manual_schedule.php">🗓 Xếp Lịch Thủ Công</a></li>
-            <?php if (($_SESSION['role'] ?? '') === 'admin'): ?>
-            <li><a href="../PHP/admin_users.php">👤 Quản lý người dùng</a></li>
-            <?php endif; ?>
-        </ul>
-        <div class="sidebar-footer">
-            <div class="sidebar-user">
-                <div class="sidebar-user-label">Đăng nhập</div>
-                <div class="sidebar-user-name"><?= htmlspecialchars($_SESSION['display_name'] ?? $_SESSION['username'] ?? 'Người dùng') ?></div>
-            </div>
-            <a href="../PHP/settings.php" class="btn" style="display:block; text-align:center; margin-bottom:10px; background:#1e293b; border:1px solid #334155;">⚙ Cài đặt</a>
-            <a href="../PHP/logout.php" class="btn-delete" style="display: block; text-align: center;">Đăng xuất</a>
-        </div>
-    </div>
+    <?php require_once __DIR__ . '/../PHP/sidebar.php'; ?>
 
     <div class="main-content">
         <div id="schedule-action-modal" class="modal" style="display:none;">
-            <div class="modal-content">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <strong id="panel-class-name"></strong>
-                    <button type="button" class="btn-delete" onclick="closeActionPanel()" style="padding:4px 8px;">✕</button>
+            <div class="modal-content modal-wide student-modal-card">
+                <div class="student-modal-header">
+                    <strong id="panel-class-name" class="student-modal-title">Danh sách học viên</strong>
+                    <button type="button" class="student-modal-x" onclick="closeActionPanel()" aria-label="Đóng">×</button>
                 </div>
-                <form id="move-form" class="compact-form">
+                <div id="class-student-details">
+                    <div class="student-list-empty">Đang tải thông tin học viên...</div>
+                </div>
+                <form id="move-form" class="compact-form" style="display:none;">
                     <input type="hidden" id="panel-class-id" name="class_id">
                     <input type="hidden" id="panel-session-date" name="session_date">
                     <input type="hidden" name="action" value="move">
@@ -114,18 +95,86 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
         let activeClassId = null;
         let activeSessionDate = null;
 
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, char => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            }[char]));
+        }
+
+        function jsArg(value) {
+            return escapeHtml(JSON.stringify(String(value ?? '')));
+        }
+
         function openActionPanel(classId, className, sessionDate) {
             document.getElementById('panel-class-id').value = classId;
             document.getElementById('panel-session-date').value = sessionDate;
-            document.getElementById('panel-class-name').innerText = 'Lớp: ' + className;
+            document.getElementById('panel-class-name').innerText = 'Danh sách học viên';
             document.getElementById('schedule-action-modal').style.display = 'flex';
             activeClassId = classId;
             activeSessionDate = sessionDate;
             document.getElementById('panel-new-date').value = sessionDate;
+            loadClassStudentDetails(classId, sessionDate);
         }
 
         function closeActionPanel() {
             document.getElementById('schedule-action-modal').style.display = 'none';
+        }
+
+        function studentStatusClass(status) {
+            if (status === 'Present') return 'status-present';
+            if (status === 'Absent') return 'status-absent';
+            return 'status-expected';
+        }
+
+        function studentPrimaryStatusLabel(student) {
+            return student.attendance_status === 'Expected' ? 'Dự kiến (Chưa học)' : (student.status_label || 'Dự kiến');
+        }
+
+        function renderClassStudentDetails(data) {
+            const panel = document.getElementById('class-student-details');
+            const classInfo = data.class || {};
+            const students = data.students || [];
+            const rows = students.map(student => `
+                <div class="student-simple-row">
+                    <div class="student-simple-main">
+                        <div class="student-simple-title">
+                            <span class="student-status-badge ${studentStatusClass(student.attendance_status)}">${escapeHtml(studentPrimaryStatusLabel(student))}</span>
+                            <span class="student-simple-name">${escapeHtml(student.name)}</span>
+                        </div>
+                        <div class="student-simple-class">Lớp học: ${escapeHtml(classInfo.name || '')}</div>
+                    </div>
+                    <span class="student-status-badge student-status-pill ${studentStatusClass(student.attendance_status)}">${escapeHtml(student.status_label || 'Dự kiến')}</span>
+                </div>
+            `).join('');
+
+            panel.innerHTML = `
+                <div class="student-simple-modal">
+                    ${rows || '<div class="student-list-empty">Lớp này chưa có học viên.</div>'}
+                    <div class="student-modal-footer">
+                        <button type="button" class="student-modal-close" onclick="closeActionPanel()">Đóng</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadClassStudentDetails(classId, sessionDate) {
+            const panel = document.getElementById('class-student-details');
+            panel.innerHTML = '<div class="student-list-empty">Đang tải thông tin học viên...</div>';
+            try {
+                const response = await fetch(`../PHP/class_students_api.php?class_id=${encodeURIComponent(classId)}&session_date=${encodeURIComponent(sessionDate || '')}`);
+                if (!response.ok) {
+                    panel.innerHTML = '<div class="student-list-empty">Không tải được danh sách học viên.</div>';
+                    return;
+                }
+                renderClassStudentDetails(await response.json());
+            } catch (error) {
+                console.error('Student details error:', error);
+                panel.innerHTML = '<div class="student-list-empty">Không tải được danh sách học viên.</div>';
+            }
         }
 
         async function fetchSchedule(offset) {
@@ -142,16 +191,20 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
                 const headerRow = document.getElementById('table-header');
                 headerRow.innerHTML = '<th style="background-color: #e2e8f0; font-weight: bold; width: 140px;">Ca dạy</th>';
                 data.dates.forEach(item => {
-                    headerRow.innerHTML += '<th>' + item.day_name + '<small>' + item.date_formatted + '</small></th>';
+                    headerRow.innerHTML += '<th>' + escapeHtml(item.day_name) + '<small>' + escapeHtml(item.date_formatted) + '</small></th>';
                 });
 
                 const bodyContainer = document.getElementById('table-body');
                 bodyContainer.innerHTML = '';
 
                 data.slots_definitions.forEach(slotItem => {
-                    let rowHtml = `<tr>`;
-                    rowHtml += `<td style="background-color: #f8fafc; font-weight: 600; text-align: left; vertical-align: middle; border-right: 2px solid var(--border-color); color: var(--primary); padding: 10px; font-size: 0.85rem;">${slotItem.slot_label}</td>`;
-                    
+                    const rowHasSessions = data.dates.some(item => {
+                        const daySessions = data.schedule[item.date_raw] || [];
+                        return daySessions.some(s => s.slot_code === slotItem.slot_code);
+                    });
+                    let rowHtml = `<tr class="${rowHasSessions ? '' : 'empty-slot-row'}">`;
+                    rowHtml += `<td class="slot-label-cell">${escapeHtml(slotItem.slot_label)}</td>`;
+
                     data.dates.forEach(item => {
                         let cellContent = '';
                         const daySessions = data.schedule[item.date_raw] || [];
@@ -160,17 +213,18 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
                         if (matchedSessions.length > 0) {
                             matchedSessions.forEach(session => {
                                 cellContent += `
-                                    <div class="session-card" data-class-id="${session.class_id || ''}" style="cursor:pointer; margin-bottom: 6px;" onclick="openActionPanel('${session.class_id || ''}', '${session.name.replace(/'/g, "\\'")}', '${item.date_raw}')">
-                                        <div class="class-name">${session.name}</div>
-                                        <div class="class-time">${session.time}</div>
+                                    <div class="session-card" data-class-id="${escapeHtml(session.class_id || '')}" style="cursor:pointer; margin-bottom: 6px;" onclick='openActionPanel(${jsArg(session.class_id || '')}, ${jsArg(session.name)}, ${jsArg(item.date_raw)})'>
+                                        <div class="class-name">${escapeHtml(session.teacher || 'Chưa gán')}</div>
+                                        <div class="class-time">${escapeHtml(session.name)}</div>
+                                        <div class="class-meta">Dự kiến: ${escapeHtml(session.student_count ?? 0)} HV</div>
                                     </div>`;
                             });
                         } else {
                             cellContent = '<span class="empty-day">·</span>';
                         }
-                        rowHtml += `<td>${cellContent}</td>`;
+                        rowHtml += `<td class="${matchedSessions.length > 0 ? '' : 'empty-cell'}">${cellContent}</td>`;
                     });
-                    
+
                     rowHtml += `</tr>`;
                     bodyContainer.innerHTML += rowHtml;
                 });

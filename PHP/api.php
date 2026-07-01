@@ -1,16 +1,11 @@
 <?php
 session_start();
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
+require_once 'config.php';
 
 // KIỂM TRA QUYỀN: Nếu chưa đăng nhập, trả về lỗi 401 ngay lập tức
 if (!isset($_SESSION['user_id'])) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Unauthorized. Vui lòng đăng nhập.']);
-    exit;
+    jsonResponse(['error' => 'Unauthorized. Vui lòng đăng nhập.'], 401);
 }
-
-require_once 'config.php';
 
 $weekOffset = isset($_GET['week']) ? (int)$_GET['week'] : 0;
 $today = new DateTime();
@@ -30,13 +25,12 @@ if ($_SESSION['role'] === 'admin' || (int)$view_user_id === (int)$_SESSION['user
 }
 
 if (!$canView) {
-    http_response_code(403);
-    echo json_encode(['error' => 'Bạn không có quyền xem lịch của người này.']);
-    exit;
+    jsonResponse(['error' => 'Bạn không có quyền xem lịch của người này.'], 403);
 }
 
 // Lấy danh sách ca học thực tế trong DB để định hình dòng
 $slotsData = getTeachingSlotOptions($db);
+$slotCodes = array_column($slotsData, 'slot_code');
 
 // Lấy toàn bộ lớp học đang hoạt động
 $classes = $db->query("SELECT * FROM classes WHERE status = 'Active'")->fetchAll(PDO::FETCH_ASSOC);
@@ -48,6 +42,11 @@ $weekSchedule = [];
 $monthPreview = [];
 $usersQuery = $db->query("SELECT id, username, full_name FROM users")->fetchAll(PDO::FETCH_ASSOC);
 $userMap = []; foreach ($usersQuery as $u) { $userMap[$u['id']] = $u['full_name'] ?: $u['username']; }
+$studentCountRows = $db->query("SELECT class_id, COUNT(*) AS total FROM student_class GROUP BY class_id")->fetchAll(PDO::FETCH_ASSOC);
+$studentCountMap = [];
+foreach ($studentCountRows as $row) {
+    $studentCountMap[(int)$row['class_id']] = (int)$row['total'];
+}
 
 $daysOfWeek = [1 => 'Thứ 2', 2 => 'Thứ 3', 3 => 'Thứ 4', 4 => 'Thứ 5', 5 => 'Thứ 6', 6 => 'Thứ 7', 0 => 'Chủ Nhật'];
 $datesStructure = [];
@@ -71,6 +70,9 @@ foreach ($classes as $class) {
 
         $displayDate = $sessionInfo['display_date'];
         $displaySlot = $sessionInfo['display_slot'];
+        if (!is_string($displayDate) || !isValidDateString($displayDate)) {
+            continue;
+        }
 
         if (!array_key_exists($displayDate, $weekSchedule)) {
             $currentDate = new DateTime($displayDate);
@@ -82,27 +84,31 @@ foreach ($classes as $class) {
         }
 
         $slotCode = null;
-        foreach ($slotsData as $slotItem) {
-            if (strpos($displaySlot, $slotItem['slot_code']) === 0) {
-                $slotCode = $slotItem['slot_code'];
+        foreach ($slotCodes as $code) {
+            if (strpos($displaySlot, $code) === 0) {
+                $slotCode = $code;
                 break;
             }
         }
         
         $teacherName = $userMap[$sessionInfo['assigned_user_id']] ?? '';
+        $studentCount = $studentCountMap[(int)$class['id']] ?? 0;
         $weekSchedule[$displayDate][] = [
             'name' => $class['class_name'], 
             'time' => $displaySlot, 
             'slot_code' => $slotCode, 
             'class_id' => $class['id'],
-            'teacher' => $teacherName
+            'teacher' => $teacherName,
+            'student_count' => $studentCount
         ];
 
         $monthPreview[$displayDate][] = [
             'name' => $class['class_name'], 
             'time' => $displaySlot, 
             'slot_code' => $slotCode, 
-            'class_id' => $class['id']
+            'class_id' => $class['id'],
+            'teacher' => $teacherName,
+            'student_count' => $studentCount
         ];
     }
 }
@@ -124,7 +130,7 @@ foreach ($datesStructure as $dayInfo) {
     }
 }
 
-echo json_encode([
+jsonResponse([
     'user_role' => $_SESSION['role'],
     'monday' => $monday->format('d/m/Y'),
     'sunday' => $sunday->format('d/m/Y'),
