@@ -29,21 +29,40 @@ function jsonAddClassResponse(bool $success, string $message, array $extra = [])
     exit;
 }
 
-function findClassScheduleConflict(PDO $db, string $date, string $slot, int $assignedUserId, int $excludeClassId = 0): ?array {
-    if (!isValidDateString($date) || $slot === '' || $assignedUserId <= 0) {
+function findClassScheduleConflictInDates(PDO $db, array $dates, string $slot, int $assignedUserId, int $excludeClassId = 0): ?array {
+    $dates = array_values(array_unique(array_filter($dates, static fn($date) => is_string($date) && isValidDateString($date))));
+    if (empty($dates) || $slot === '' || $assignedUserId <= 0) {
         return null;
     }
 
-    $classes = $db->query("SELECT * FROM classes WHERE status = 'Active'")->fetchAll(PDO::FETCH_ASSOC);
-    $overrideRows = $db->query("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides")->fetchAll(PDO::FETCH_ASSOC);
+    $classStmt = $db->prepare("
+        SELECT DISTINCT c.*
+        FROM classes c
+        LEFT JOIN class_schedule_overrides o
+            ON o.class_id = c.id
+           AND o.action_type = 'move'
+           AND o.new_user_id = ?
+        WHERE c.status = 'Active'
+          AND c.id <> ?
+          AND (c.assigned_user_id = ? OR o.class_id IS NOT NULL)
+    ");
+    $classStmt->execute([$assignedUserId, $excludeClassId, $assignedUserId]);
+    $classes = $classStmt->fetchAll(PDO::FETCH_ASSOC);
+    if (empty($classes)) {
+        return null;
+    }
+
+    $classIds = array_map(static fn($class) => (int)$class['id'], $classes);
+    $classPlaceholders = implode(',', array_fill(0, count($classIds), '?'));
+    $overrideStmt = $db->prepare("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides WHERE class_id IN ($classPlaceholders)");
+    $overrideStmt->execute($classIds);
+    $overrideRows = $overrideStmt->fetchAll(PDO::FETCH_ASSOC);
+    $dateMap = array_fill_keys($dates, true);
 
     foreach ($classes as $class) {
-        if ((int)$class['id'] === $excludeClassId) {
-            continue;
-        }
-
         foreach (buildClassSessionDates($class, $overrideRows) as $session) {
-            if (($session['display_date'] ?? '') !== $date || ($session['display_slot'] ?? '') !== $slot) {
+            $displayDate = (string)($session['display_date'] ?? '');
+            if (!isset($dateMap[$displayDate]) || ($session['display_slot'] ?? '') !== $slot) {
                 continue;
             }
 
@@ -51,7 +70,7 @@ function findClassScheduleConflict(PDO $db, string $date, string $slot, int $ass
                 return [
                     'class_id' => (int)$class['id'],
                     'class_name' => $class['class_name'] ?? 'Không rõ lớp',
-                    'date' => $date,
+                    'date' => $displayDate,
                     'slot' => $slot,
                 ];
             }
@@ -61,15 +80,12 @@ function findClassScheduleConflict(PDO $db, string $date, string $slot, int $ass
     return null;
 }
 
-function findOneOnOneCreationConflict(PDO $db, string $startDate, array $days, int $totalSessions, string $slotTime, int $assignedUserId, int $excludeClassId = 0): ?array {
-    foreach (generateDates($startDate, $days, $totalSessions) as $date) {
-        $conflict = findClassScheduleConflict($db, $date, $slotTime, $assignedUserId, $excludeClassId);
-        if ($conflict) {
-            return $conflict;
-        }
-    }
+function findClassScheduleConflict(PDO $db, string $date, string $slot, int $assignedUserId, int $excludeClassId = 0): ?array {
+    return findClassScheduleConflictInDates($db, [$date], $slot, $assignedUserId, $excludeClassId);
+}
 
-    return null;
+function findOneOnOneCreationConflict(PDO $db, string $startDate, array $days, int $totalSessions, string $slotTime, int $assignedUserId, int $excludeClassId = 0): ?array {
+    return findClassScheduleConflictInDates($db, generateDates($startDate, $days, $totalSessions), $slotTime, $assignedUserId, $excludeClassId);
 }
 
 function buildClassValidationErrors(string $classType, string $className, int $totalSessions, int $assignedUserId, string $startDate = '', string $slotTime = '', array $days = []): array {
@@ -188,9 +204,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_class'])) {
                 SET class_name = ?, start_date = NOW(), schedule_days = 'Linh hoạt', slot_time = 'Xoay ca', total_sessions = ?, class_type = ?, assigned_user_id = ?
                 WHERE id = ?");
             $stmt->execute([$className, $totalSessions, $classType, $assignedUserId, $classId]);
-            $db->prepare("DELETE FROM class_schedule_overrides WHERE class_id = ?")->execute([$classId]);
             $responseSuccess = true;
-            $responseMessage = 'Đã cập nhật lớp và xóa lịch cũ. Hãy xếp lịch thủ công lại từ đầu.';
+            $responseMessage = 'Đã cập nhật lớp và giữ các lịch chỉnh tay hiện có.';
         } else {
             $responseMessage = formatValidationMessage($errors);
         }
@@ -209,9 +224,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_class'])) {
                     SET class_name = ?, start_date = ?, schedule_days = ?, slot_time = ?, total_sessions = ?, class_type = ?, assigned_user_id = ?
                     WHERE id = ?");
                 $stmt->execute([$className, $startDate, $scheduleDays, $slotTime, $totalSessions, $classType, $assignedUserId, $classId]);
-                $db->prepare("DELETE FROM class_schedule_overrides WHERE class_id = ?")->execute([$classId]);
                 $responseSuccess = true;
-                $responseMessage = 'Đã cập nhật lớp và sắp lịch lại từ đầu theo cấu hình mới.';
+                $responseMessage = 'Đã cập nhật lớp và giữ các lịch chỉnh tay hiện có.';
             }
         } else {
             $responseMessage = formatValidationMessage($errors);
@@ -280,11 +294,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_flexible_sched
         }
 
         if ($message === '') {
-        $overrideDateIdentifier = "FLEX-ID-{$targetIndex}";
-        $db->prepare("DELETE FROM class_schedule_overrides WHERE class_id = ? AND override_date = ?")->execute([$classId, $overrideDateIdentifier]);
-        $stmt = $db->prepare("INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, action_type) VALUES (?, ?, ?, ?, 'move')");
-        $stmt->execute([$classId, $overrideDateIdentifier, $newDate, $newSlot]);
-        $message = "<p class='success'>Đã gán ngày học thủ công cho ca thành công!</p>";
+            $overrideDateIdentifier = "FLEX-ID-{$targetIndex}";
+            saveClassScheduleOverride($db, $classId, $overrideDateIdentifier, $newDate, $newSlot, null, 'move');
+            $message = "<p class='success'>Đã gán ngày học thủ công cho ca thành công!</p>";
         }
     }
 }
@@ -334,7 +346,10 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
 <head>
     <meta charset="UTF-8">
     <title>Cấu Hình Lớp Học</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"></noscript>
     <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
     <style>
         .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; }

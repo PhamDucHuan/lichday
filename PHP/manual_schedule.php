@@ -27,9 +27,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manual_schedule'
         $notificationContext = getScheduleNotificationContext($db, $classId, $sessionDate);
 
         if ($action === 'delete') {
-            $db->prepare('DELETE FROM class_schedule_overrides WHERE class_id = ? AND override_date = ?')->execute([$classId, $sessionDate]);
-            $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, action_type) VALUES (?, ?, ?)');
-            $stmt->execute([$classId, $sessionDate, 'delete']);
+            saveClassScheduleOverride($db, $classId, $sessionDate, null, null, null, 'delete');
             notifyScheduleChanged($db, 'delete', $notificationContext);
             $message = "<p class='success'>Đã bỏ buổi học này khỏi lịch và đẩy các buổi tiếp theo về sau.</p>";
         } elseif ($action === 'move' && $newDate !== '' && $newSlot !== '') {
@@ -45,9 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manual_schedule'
             if ($conflict) {
                 $message = "<p class='error'>Lớp 1-1 bị trùng lịch với lớp " . htmlspecialchars($conflict['class_name']) . " vào ngày " . date('d/m/Y', strtotime($conflict['date'])) . " (" . htmlspecialchars($conflict['slot']) . ").</p>";
             } else {
-                $db->prepare('DELETE FROM class_schedule_overrides WHERE class_id = ? AND override_date = ?')->execute([$classId, $sessionDate]);
-                $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type) VALUES (?, ?, ?, ?, ?, ?)');
-                $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move']);
+                saveClassScheduleOverride($db, $classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move');
                 notifyScheduleChanged($db, 'move', $notificationContext, [
                     'new_date' => $newDate,
                     'new_slot' => $newSlot,
@@ -120,7 +116,10 @@ $slotOptions = array_map(static fn($slot) => $slot['slot_label'], $slotRows);
 <head>
     <meta charset="UTF-8">
     <title>Xếp Lịch Thủ Công</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"></noscript>
     <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
     <style>
         .week-nav { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; }

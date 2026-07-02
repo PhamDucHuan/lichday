@@ -23,6 +23,79 @@ function apCurlExecWithRetry($curl, int $maxAttempts = 3): array {
     return [$html, $error, $status];
 }
 
+function apCreateDownloadCurl(string $url, string $cookieFile, string $sessionCookie, int $timeout = 60) {
+    $curl = curl_init($url);
+    curl_setopt_array($curl, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_COOKIEJAR => $cookieFile,
+        CURLOPT_COOKIEFILE => $cookieFile,
+        CURLOPT_COOKIE => $sessionCookie,
+        CURLOPT_CONNECTTIMEOUT => min(15, $timeout),
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+        CURLOPT_SSLVERSION => CURL_SSLVERSION_TLSv1_2,
+        CURLOPT_USERAGENT => 'curl/8.20.0',
+        CURLOPT_ENCODING => '',
+    ]);
+
+    return $curl;
+}
+
+function apDownloadProgressDetailPages(array $classIds, string $cookieFile, string $sessionCookie): array {
+    $classIds = array_values(array_filter(array_unique(array_map('intval', $classIds)), static function (int $classId): bool {
+        return $classId > 0;
+    }));
+    $details = [];
+    $errors = [];
+    if (empty($classIds)) {
+        return ['details' => $details, 'errors' => $errors];
+    }
+
+    $concurrency = max(1, min(12, (int)(getenv('AP_PROGRESS_DETAIL_CONCURRENCY') ?: 8)));
+    $timeout = max(8, min(30, (int)(getenv('AP_PROGRESS_DETAIL_TIMEOUT') ?: 12)));
+
+    foreach (array_chunk($classIds, $concurrency) as $chunk) {
+        $multi = curl_multi_init();
+        $handles = [];
+
+        foreach ($chunk as $classId) {
+            $url = 'https://ap.tinhoccantho.vn/admin_student_progress.php?class_id=' . $classId;
+            $handle = apCreateDownloadCurl($url, $cookieFile, $sessionCookie, $timeout);
+            $handles[$classId] = $handle;
+            curl_multi_add_handle($multi, $handle);
+        }
+
+        $running = null;
+        do {
+            $status = curl_multi_exec($multi, $running);
+            if ($running > 0) {
+                if (curl_multi_select($multi, 1.0) === -1) {
+                    usleep(100000);
+                }
+            }
+        } while ($running > 0 && $status === CURLM_OK);
+
+        foreach ($handles as $classId => $handle) {
+            $html = curl_multi_getcontent($handle);
+            $httpStatus = (int)curl_getinfo($handle, CURLINFO_HTTP_CODE);
+            $error = curl_error($handle);
+            if ($html !== false && $httpStatus < 400 && stripos((string)$html, '<table') !== false) {
+                $details[(string)$classId] = (string)$html;
+            } else {
+                $errors[(string)$classId] = $error ?: ('HTTP ' . $httpStatus);
+            }
+            curl_multi_remove_handle($multi, $handle);
+            curl_close($handle);
+        }
+
+        curl_multi_close($multi);
+    }
+
+    return ['details' => $details, 'errors' => $errors];
+}
+
 function downloadApSyncHtmlForClassUpdate(string $username, string $password): array {
     if (!function_exists('curl_init')) {
         throw new RuntimeException('May chu PHP chua bat extension cURL.');
@@ -71,21 +144,7 @@ function downloadApSyncHtmlForClassUpdate(string $username, string $password): a
         }
 
         $download = static function (string $url) use ($cookieFile, $sessionCookie): array {
-            $curl = curl_init($url);
-            curl_setopt_array($curl, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_COOKIEJAR => $cookieFile,
-                CURLOPT_COOKIEFILE => $cookieFile,
-                CURLOPT_COOKIE => $sessionCookie,
-                CURLOPT_CONNECTTIMEOUT => 15,
-                CURLOPT_TIMEOUT => 60,
-                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
-                CURLOPT_SSLVERSION => CURL_SSLVERSION_TLSv1_2,
-                CURLOPT_USERAGENT => 'curl/8.20.0',
-                CURLOPT_ENCODING => '',
-            ]);
+            $curl = apCreateDownloadCurl($url, $cookieFile, $sessionCookie, 60);
             [$html, $error, $status] = apCurlExecWithRetry($curl);
             curl_close($curl);
 
@@ -105,6 +164,15 @@ function downloadApSyncHtmlForClassUpdate(string $username, string $password): a
         [$progressHtml, $progressError, $progressStatus] = $download('https://ap.tinhoccantho.vn/admin_student_progress.php');
         if ($progressHtml === false || $progressStatus >= 400 || strpos($progressHtml, 'admin_student_progress.php?class_id=') === false) {
             throw new RuntimeException('Khong tai duoc trang tien do hoc vien AP: ' . ($progressError ?: 'HTTP ' . $progressStatus));
+        }
+
+        $progressDetails = [];
+        $progressDetailErrors = [];
+        if (preg_match_all('/admin_student_progress\.php\?class_id=([0-9]+)/', $progressHtml, $progressMatches)) {
+            $classIds = array_values(array_unique(array_map('intval', $progressMatches[1])));
+            $detailResult = apDownloadProgressDetailPages($classIds, $cookieFile, $sessionCookie);
+            $progressDetails = $detailResult['details'];
+            $progressDetailErrors = $detailResult['errors'];
         }
 
         [$slotsReportHtml, $slotsReportError, $slotsReportStatus] = $download('https://ap.tinhoccantho.vn/admin_slots_report.php');
@@ -128,6 +196,8 @@ function downloadApSyncHtmlForClassUpdate(string $username, string $password): a
             'classes' => $classesHtml,
             'students' => $studentsHtml,
             'progress' => $progressHtml,
+            'progress_details' => $progressDetails,
+            'progress_detail_errors' => $progressDetailErrors,
             'slots_report' => $slotsReportHtml,
             'center_schedule' => $centerScheduleHtml,
         ];
@@ -139,6 +209,10 @@ function downloadApSyncHtmlForClassUpdate(string $username, string $password): a
 function runApClassStudentUpdate(): array {
     global $db, $apSyncUsername, $apSyncPassword;
 
+    if (function_exists('set_time_limit')) {
+        @set_time_limit(180);
+    }
+
     if (trim($apSyncUsername ?? '') === '' || trim($apSyncPassword ?? '') === '') {
         throw new RuntimeException('Chua cau hinh tai khoan AP_SYNC_USERNAME / AP_SYNC_PASSWORD.');
     }
@@ -147,17 +221,23 @@ function runApClassStudentUpdate(): array {
     $htmlPath = tempnam(sys_get_temp_dir(), 'ap_classes_');
     $studentsHtmlPath = tempnam(sys_get_temp_dir(), 'ap_students_');
     $progressHtmlPath = tempnam(sys_get_temp_dir(), 'ap_progress_');
+    $progressDetailsPath = tempnam(sys_get_temp_dir(), 'ap_progress_details_');
     $slotsReportHtmlPath = tempnam(sys_get_temp_dir(), 'ap_slots_report_');
     $centerScheduleHtmlPath = tempnam(sys_get_temp_dir(), 'ap_center_schedule_');
     if (
         $htmlPath === false
         || $studentsHtmlPath === false
         || $progressHtmlPath === false
+        || $progressDetailsPath === false
         || $slotsReportHtmlPath === false
         || $centerScheduleHtmlPath === false
         || file_put_contents($htmlPath, $syncHtml['classes']) === false
         || file_put_contents($studentsHtmlPath, $syncHtml['students']) === false
         || file_put_contents($progressHtmlPath, $syncHtml['progress']) === false
+        || file_put_contents($progressDetailsPath, json_encode([
+            'details' => $syncHtml['progress_details'] ?? [],
+            'errors' => $syncHtml['progress_detail_errors'] ?? [],
+        ], JSON_UNESCAPED_UNICODE)) === false
         || file_put_contents($slotsReportHtmlPath, $syncHtml['slots_report']) === false
         || file_put_contents($centerScheduleHtmlPath, $syncHtml['center_schedule']) === false
     ) {
@@ -165,7 +245,7 @@ function runApClassStudentUpdate(): array {
     }
 
     $previousArgv = $GLOBALS['argv'] ?? null;
-    $argv = [__DIR__ . '/import_ap_classes.php', $htmlPath, $studentsHtmlPath, $progressHtmlPath, $slotsReportHtmlPath, $centerScheduleHtmlPath];
+    $argv = [__DIR__ . '/import_ap_classes.php', $htmlPath, $studentsHtmlPath, $progressHtmlPath, $slotsReportHtmlPath, $centerScheduleHtmlPath, $progressDetailsPath];
     $GLOBALS['argv'] = $argv;
 
     ob_start();
@@ -184,6 +264,7 @@ function runApClassStudentUpdate(): array {
         @unlink($htmlPath);
         @unlink($studentsHtmlPath);
         @unlink($progressHtmlPath);
+        @unlink($progressDetailsPath);
         @unlink($slotsReportHtmlPath);
         @unlink($centerScheduleHtmlPath);
     }

@@ -16,15 +16,10 @@ $recaptchaSecretKeyConfig = '6LcXDDotAAAAACxTdfxrCiiC6QMAjDCaGs4LyO81';
 $recaptchaSiteKey = getenv('RECAPTCHA_SITE_KEY') ?: $recaptchaSiteKeyConfig;
 $recaptchaSecretKey = getenv('RECAPTCHA_SECRET_KEY') ?: $recaptchaSecretKeyConfig;
 
-// Zalo notification settings.
-// Nếu gửi vào nhóm Zalo qua bot/adapter, dùng user access token ở dòng bên dưới.
-$zaloGroupWebhookUrl = getenv('ZALO_GROUP_WEBHOOK_URL') ?: '';
-$zaloGroupId = getenv('ZALO_GROUP_ID') ?: '';
-$zaloUserAccessToken = getenv('ZALO_USER_ACCESS_TOKEN') ?: '58etAkkBwNKGWJugx83WTXE6EIlfcvHr5UyuSggFlMnHZ65ru-V-M1liK0E4YES00VLG1Rk1_GWvqIeCg8Ez33Jr71MybueE6DHL4Qc0mZKWzrSjg9Jn2p7VBLsqkw5a5R5x9usny2KboLi6ePtZ8IV5VYEZXAG6Dze93wc0WZW0to9lijsuQpYn7KYLuQXi0VynU_EqZcHs_bPLnO3W23V9ImsDcFqmTVvGF_MawZzpu7ympeIa6LtU64wbWy5HFjX-JOUZl64VemL7eSVUMpoMH02doTyXMPrY5yBqn1ealryLYS_uDmQfGpwFo-4q5uitERxqW1GFlYaZYBxmUYlCPdgHkiTsE-f7GicXuKPCq6nlLyipxsxhb-fz';
-
-// Nếu gửi từng người qua Zalo Official Account, dùng OA token và danh sách user_id người nhận.
-$zaloAccessToken = getenv('ZALO_OA_ACCESS_TOKEN') ?: '';
-$zaloRecipientIdsConfig = getenv('ZALO_RECIPIENT_IDS') ?: '';
+// Telegram notification settings.
+// Create a bot with BotFather, add it to the group, then put the bot token and group chat_id here.
+$telegramBotToken = getenv('TELEGRAM_BOT_TOKEN') ?: '8939237272:AAH62zr8fgoLZFhtwCJKTn8X0j75nrVE9uM';
+$telegramChatId = getenv('TELEGRAM_CHAT_ID') ?: '-5423547795';
 try {
     $db = new PDO(
         "mysql:host=$host;dbname=$dbname;charset=utf8mb4;port=$port",
@@ -88,70 +83,39 @@ function isValidDateString(string $date): bool {
     return $dt && $dt->format('Y-m-d') === $date;
 }
 
-function sendZaloTextNotification(string $message): array {
-    global $zaloAccessToken, $zaloRecipientIdsConfig, $zaloGroupWebhookUrl, $zaloGroupId, $zaloUserAccessToken;
+function sendTelegramTextNotification(string $message): array {
+    global $telegramBotToken, $telegramChatId;
 
-    if ($zaloGroupWebhookUrl !== '' && $zaloGroupId !== '') {
-        $payload = json_encode([
-            'group_id' => $zaloGroupId,
-            'message' => $message,
-        ], JSON_UNESCAPED_UNICODE);
-
-        $context = stream_context_create([
-            'http' => [
-                'method' => 'POST',
-                'header' => "Content-Type: application/json\r\nAuthorization: Bearer {$zaloUserAccessToken}\r\n",
-                'content' => $payload,
-                'timeout' => 8,
-                'ignore_errors' => true,
-            ],
-        ]);
-
-        $response = @file_get_contents($zaloGroupWebhookUrl, false, $context);
-        $result = is_string($response) ? json_decode($response, true) : null;
-        if ($response !== false && (!is_array($result) || !empty($result['success']) || (int)($result['error'] ?? 0) === 0)) {
-            return ['enabled' => true, 'sent' => 1, 'failed' => 0, 'mode' => 'group_webhook'];
-        }
-
-        error_log('Zalo group webhook failed: ' . ($response ?: 'No response'));
-        return ['enabled' => true, 'sent' => 0, 'failed' => 1, 'mode' => 'group_webhook'];
+    if ($telegramBotToken === '' || $telegramChatId === '') {
+        return ['enabled' => false, 'sent' => 0, 'failed' => 0, 'mode' => 'telegram'];
     }
 
-    $recipientIds = array_values(array_filter(array_map('trim', explode(',', $zaloRecipientIdsConfig))));
-    if ($zaloAccessToken === '' || empty($recipientIds)) {
-        return ['enabled' => false, 'sent' => 0, 'failed' => 0];
+    $payload = json_encode([
+        'chat_id' => $telegramChatId,
+        'text' => $message,
+        'disable_web_page_preview' => true,
+    ], JSON_UNESCAPED_UNICODE);
+
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => "Content-Type: application/json\r\n",
+            'content' => $payload,
+            'timeout' => 8,
+            'ignore_errors' => true,
+        ],
+    ]);
+
+    $url = 'https://api.telegram.org/bot' . $telegramBotToken . '/sendMessage';
+    $response = @file_get_contents($url, false, $context);
+    $result = is_string($response) ? json_decode($response, true) : null;
+
+    if (is_array($result) && !empty($result['ok'])) {
+        return ['enabled' => true, 'sent' => 1, 'failed' => 0, 'mode' => 'telegram'];
     }
 
-    $sent = 0;
-    $failed = 0;
-    foreach ($recipientIds as $recipientId) {
-        $payload = json_encode([
-            'recipient' => ['user_id' => $recipientId],
-            'message' => ['text' => $message],
-        ], JSON_UNESCAPED_UNICODE);
-
-        $context = stream_context_create([
-            'http' => [
-                'method' => 'POST',
-                'header' => "Content-Type: application/json\r\naccess_token: {$zaloAccessToken}\r\n",
-                'content' => $payload,
-                'timeout' => 8,
-                'ignore_errors' => true,
-            ],
-        ]);
-
-        $response = @file_get_contents('https://openapi.zalo.me/v3.0/oa/message/cs', false, $context);
-        $result = is_string($response) ? json_decode($response, true) : null;
-
-        if (is_array($result) && (int)($result['error'] ?? -1) === 0) {
-            $sent++;
-        } else {
-            $failed++;
-            error_log('Zalo notification failed: ' . ($response ?: 'No response'));
-        }
-    }
-
-    return ['enabled' => true, 'sent' => $sent, 'failed' => $failed];
+    error_log('Telegram notification failed: ' . ($response ?: 'No response'));
+    return ['enabled' => true, 'sent' => 0, 'failed' => 1, 'mode' => 'telegram'];
 }
 
 function ensureUserAccountColumns(PDO $db): void {
@@ -245,6 +209,84 @@ function ensureScheduleOverrideTable(PDO $db): void {
     }
 }
 
+function saveClassScheduleOverride(PDO $db, int $classId, string $overrideDate, ?string $newDate, ?string $newSlot, ?int $newUserId, string $actionType): string {
+    $findStmt = $db->prepare('SELECT id FROM class_schedule_overrides WHERE class_id = ? AND override_date = ? LIMIT 1');
+    $findStmt->execute([$classId, $overrideDate]);
+    $existingId = (int)$findStmt->fetchColumn();
+
+    if ($existingId > 0) {
+        $updateStmt = $db->prepare('
+            UPDATE class_schedule_overrides
+            SET new_date = ?, new_slot = ?, new_user_id = ?, action_type = ?
+            WHERE id = ?
+        ');
+        $updateStmt->execute([$newDate ?: null, $newSlot ?: null, $newUserId ?: null, $actionType, $existingId]);
+        return 'updated';
+    }
+
+    $insertStmt = $db->prepare('
+        INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ');
+    $insertStmt->execute([$classId, $overrideDate, $newDate ?: null, $newSlot ?: null, $newUserId ?: null, $actionType]);
+    return 'inserted';
+}
+
+function saveAttendanceRecord(PDO $db, int $classId, int $studentId, string $attendanceDate, string $slotTime, string $status): string {
+    $status = $status === 'Absent' ? 'Absent' : 'Present';
+    $findStmt = $db->prepare('
+        SELECT id
+        FROM attendance
+        WHERE class_id = ?
+          AND student_id = ?
+          AND attendance_date = ?
+          AND COALESCE(slot_time, "") = ?
+        LIMIT 1
+    ');
+    $findStmt->execute([$classId, $studentId, $attendanceDate, $slotTime]);
+    $existingId = (int)$findStmt->fetchColumn();
+
+    if ($existingId > 0) {
+        $updateStmt = $db->prepare('UPDATE attendance SET slot_time = ?, status = ? WHERE id = ?');
+        $updateStmt->execute([$slotTime, $status, $existingId]);
+        return 'updated';
+    }
+
+    $insertStmt = $db->prepare('INSERT INTO attendance (class_id, student_id, attendance_date, slot_time, status) VALUES (?, ?, ?, ?, ?)');
+    $insertStmt->execute([$classId, $studentId, $attendanceDate, $slotTime, $status]);
+    return 'inserted';
+}
+
+function syncUserViewPermissions(PDO $db, int $viewerId, array $viewedUserIds): array {
+    $viewedUserIds = array_values(array_unique(array_filter(array_map('intval', $viewedUserIds), static function ($viewedUserId) use ($viewerId) {
+        return $viewedUserId > 0 && $viewedUserId !== $viewerId;
+    })));
+
+    $existingStmt = $db->prepare('SELECT viewed_user_id FROM user_view_permissions WHERE viewer_id = ?');
+    $existingStmt->execute([$viewerId]);
+    $existingIds = array_map('intval', $existingStmt->fetchAll(PDO::FETCH_COLUMN));
+
+    $existingMap = array_fill_keys($existingIds, true);
+    $targetMap = array_fill_keys($viewedUserIds, true);
+    $toInsert = array_values(array_filter($viewedUserIds, static fn($viewedUserId) => !isset($existingMap[$viewedUserId])));
+    $toDelete = array_values(array_filter($existingIds, static fn($viewedUserId) => !isset($targetMap[$viewedUserId])));
+
+    if (!empty($toInsert)) {
+        $insertStmt = $db->prepare('INSERT IGNORE INTO user_view_permissions (viewer_id, viewed_user_id) VALUES (?, ?)');
+        foreach ($toInsert as $viewedUserId) {
+            $insertStmt->execute([$viewerId, $viewedUserId]);
+        }
+    }
+
+    if (!empty($toDelete)) {
+        $placeholders = implode(',', array_fill(0, count($toDelete), '?'));
+        $deleteStmt = $db->prepare("DELETE FROM user_view_permissions WHERE viewer_id = ? AND viewed_user_id IN ($placeholders)");
+        $deleteStmt->execute(array_merge([$viewerId], $toDelete));
+    }
+
+    return ['inserted' => count($toInsert), 'deleted' => count($toDelete)];
+}
+
 function ensureTeachingSlotsTable(PDO $db): void {
     $db->exec("CREATE TABLE IF NOT EXISTS teaching_slots (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -306,6 +348,32 @@ function addIndexIfMissing(PDO $db, string $table, string $indexName, string $de
     }
 }
 
+function getIndexColumns(PDO $db, string $table, string $indexName): array {
+    $stmt = $db->prepare("
+        SELECT column_name
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = ?
+          AND index_name = ?
+        ORDER BY seq_in_index ASC
+    ");
+    $stmt->execute([$table, $indexName]);
+    return array_map('strval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+}
+
+function ensureAttendanceUniqueIndex(PDO $db): void {
+    $columns = getIndexColumns($db, 'attendance', 'unique_attendance');
+    if ($columns === ['class_id', 'student_id', 'attendance_date', 'slot_time']) {
+        return;
+    }
+
+    if (!empty($columns)) {
+        $db->exec('ALTER TABLE attendance DROP INDEX unique_attendance');
+    }
+
+    $db->exec('ALTER TABLE attendance ADD UNIQUE KEY unique_attendance (class_id, student_id, attendance_date, slot_time)');
+}
+
 function ensurePerformanceIndexes(PDO $db): void {
     addIndexIfMissing($db, 'classes', 'idx_classes_status', '(status)');
     addIndexIfMissing($db, 'classes', 'idx_classes_assigned_user', '(assigned_user_id)');
@@ -313,8 +381,11 @@ function ensurePerformanceIndexes(PDO $db): void {
     addIndexIfMissing($db, 'students', 'idx_students_name', '(student_name)');
     addIndexIfMissing($db, 'student_class', 'idx_student_class_class', '(class_id)');
     addIndexIfMissing($db, 'student_class', 'idx_student_class_student', '(student_id)');
+    addIndexIfMissing($db, 'student_class', 'idx_student_class_class_student', '(class_id, student_id)');
     addIndexIfMissing($db, 'attendance', 'idx_attendance_class_status', '(class_id, status)');
     addIndexIfMissing($db, 'attendance', 'idx_attendance_student_class', '(student_id, class_id)');
+    addIndexIfMissing($db, 'attendance', 'idx_attendance_report_lookup', '(class_id, student_id, attendance_date)');
+    ensureAttendanceUniqueIndex($db);
     addIndexIfMissing($db, 'class_schedule_overrides', 'idx_overrides_class_date', '(class_id, override_date)');
     addIndexIfMissing($db, 'user_view_permissions', 'idx_permissions_viewer', '(viewer_id)');
     addIndexIfMissing($db, 'user_view_permissions', 'idx_permissions_viewed', '(viewed_user_id)');
@@ -322,7 +393,7 @@ function ensurePerformanceIndexes(PDO $db): void {
 }
 
 function ensureApplicationSchema(PDO $db): void {
-    $schemaVersion = '2026-07-01-schedule-override-varchar';
+    $schemaVersion = '2026-07-02-attendance-slot-unique';
     $markerFile = __DIR__ . '/.schema_ready_' . preg_replace('/[^a-zA-Z0-9_.-]/', '_', $schemaVersion);
 
     if (is_file($markerFile)) {
@@ -335,7 +406,13 @@ function ensureApplicationSchema(PDO $db): void {
     ensureScheduleOverrideTable($db);
     ensureTeachingSlotsTable($db);
     ensureStudentProgressTable($db);
-    ensurePerformanceIndexes($db);
+    ensureAttendanceUniqueIndex($db);
+    $canRunHeavySchemaUpdates = PHP_SAPI === 'cli'
+        || getenv('RUN_HEAVY_SCHEMA_UPDATES') === '1'
+        || (isset($_GET['run_schema_indexes']) && ($_SESSION['role'] ?? '') === 'admin');
+    if ($canRunHeavySchemaUpdates) {
+        ensurePerformanceIndexes($db);
+    }
 
     @file_put_contents($markerFile, date('c'));
 }
@@ -359,6 +436,30 @@ function getTeachingSlotOptions(PDO $db): array {
         ['slot_code' => 'T', 'slot_label' => 'T (18:00 - 21:00)', 'start_time' => '18:00:00', 'end_time' => '21:00:00'],
         ['slot_code' => 'T2', 'slot_label' => 'T2 (19:30 - 21:00)', 'start_time' => '19:30:00', 'end_time' => '21:00:00'],
     ];
+}
+
+function extractTeachingSlotCode($slotLabel, array $slotsData) {
+    $slotLabel = trim((string)$slotLabel);
+    if ($slotLabel === '') {
+        return null;
+    }
+
+    $slotCodes = array_values(array_filter(array_map(static function ($slot) {
+        return trim((string)($slot['slot_code'] ?? ''));
+    }, $slotsData)));
+
+    usort($slotCodes, static function ($a, $b) {
+        $lengthCompare = strlen($b) <=> strlen($a);
+        return $lengthCompare !== 0 ? $lengthCompare : strcmp($a, $b);
+    });
+
+    foreach ($slotCodes as $code) {
+        if (preg_match('/^' . preg_quote($code, '/') . '(?:\b|\s|\()/iu', $slotLabel)) {
+            return $code;
+        }
+    }
+
+    return null;
 }
 
 ensureApplicationSchema($db);
@@ -396,7 +497,7 @@ function generateDates($startDate, $daysArray, $totalSessions) {
 }
 
 function buildClassSessionDates(array $class, array $overrides): array {
-    global $db;
+    global $db, $preloadedClassAbsentCounts;
     
     $classType = $class['class_type'] ?? 'fixed';
     $classId = (int)$class['id'];
@@ -446,11 +547,15 @@ function buildClassSessionDates(array $class, array $overrides): array {
 
     // NẾU LÀ LỚP CỐ ĐỊNH: Giữ nguyên logic tính tự động cũ
     $daysArray = explode(',', $class['schedule_days']);
-    static $absentCounts = null;
-    if ($absentCounts === null) {
-        $absentCounts = [];
-        foreach ($db->query("SELECT class_id, COUNT(*) AS total FROM attendance WHERE status = 'Absent' GROUP BY class_id") as $row) {
-            $absentCounts[(int)$row['class_id']] = (int)$row['total'];
+    if (is_array($preloadedClassAbsentCounts ?? null)) {
+        $absentCounts = $preloadedClassAbsentCounts;
+    } else {
+        static $absentCounts = null;
+        if ($absentCounts === null) {
+            $absentCounts = [];
+            foreach ($db->query("SELECT class_id, COUNT(*) AS total FROM attendance WHERE status = 'Absent' GROUP BY class_id") as $row) {
+                $absentCounts[(int)$row['class_id']] = (int)$row['total'];
+            }
         }
     }
     $absentCount = $absentCounts[$classId] ?? 0;
@@ -502,8 +607,28 @@ function findTeacherScheduleConflict(PDO $db, string $date, string $slot, int $a
         return null;
     }
 
-    $classes = $db->query("SELECT * FROM classes WHERE status = 'Active'")->fetchAll(PDO::FETCH_ASSOC);
-    $overrideRows = $db->query("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides")->fetchAll(PDO::FETCH_ASSOC);
+    $classStmt = $db->prepare("
+        SELECT DISTINCT c.*
+        FROM classes c
+        LEFT JOIN class_schedule_overrides o
+            ON o.class_id = c.id
+           AND o.action_type = 'move'
+           AND o.new_user_id = ?
+        WHERE c.status = 'Active'
+          AND c.id <> ?
+          AND (c.assigned_user_id = ? OR o.class_id IS NOT NULL)
+    ");
+    $classStmt->execute([$assignedUserId, $excludeClassId, $assignedUserId]);
+    $classes = $classStmt->fetchAll(PDO::FETCH_ASSOC);
+    if (empty($classes)) {
+        return null;
+    }
+
+    $classIds = array_map(static fn($class) => (int)$class['id'], $classes);
+    $classPlaceholders = implode(',', array_fill(0, count($classIds), '?'));
+    $overrideStmt = $db->prepare("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides WHERE class_id IN ($classPlaceholders)");
+    $overrideStmt->execute($classIds);
+    $overrideRows = $overrideStmt->fetchAll(PDO::FETCH_ASSOC);
 
     foreach ($classes as $class) {
         if ((int)$class['id'] === $excludeClassId) {
@@ -546,7 +671,7 @@ function getUserDisplayNameById(PDO $db, int $userId): string {
 }
 
 function getScheduleNotificationContext(PDO $db, int $classId, string $sessionDate) {
-    if ($classId <= 0 || !isValidDateString($sessionDate)) {
+    if ($classId <= 0 || $sessionDate === '') {
         return null;
     }
 
@@ -600,7 +725,7 @@ function notifyScheduleChanged(PDO $db, string $action, $context, array $changes
             . "Giáo viên: {$context['old_teacher']}\n"
             . "Người thao tác: {$actor}";
 
-        return sendZaloTextNotification($message);
+        return sendTelegramTextNotification($message);
     }
 
     $newTeacherId = (int)($changes['new_user_id'] ?? 0);
@@ -615,6 +740,6 @@ function notifyScheduleChanged(PDO $db, string $action, $context, array $changes
         . "Giáo viên: {$newTeacher}\n"
         . "Người thao tác: {$actor}";
 
-    return sendZaloTextNotification($message);
+    return sendTelegramTextNotification($message);
 }
 ?>

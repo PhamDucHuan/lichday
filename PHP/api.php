@@ -30,19 +30,41 @@ if (!$canView) {
 
 // Lấy danh sách ca học thực tế trong DB để định hình dòng
 $slotsData = getTeachingSlotOptions($db);
-$slotCodes = array_column($slotsData, 'slot_code');
 
-// Lấy toàn bộ lớp học đang hoạt động
-$classes = $db->query("SELECT * FROM classes WHERE status = 'Active'")->fetchAll(PDO::FETCH_ASSOC);
+// Chỉ lấy các lớp có khả năng xuất hiện trong lịch của giáo viên đang xem.
+$classStmt = $db->prepare("
+    SELECT DISTINCT c.*
+    FROM classes c
+    LEFT JOIN class_schedule_overrides o
+        ON o.class_id = c.id
+       AND o.action_type = 'move'
+       AND o.new_user_id = ?
+    WHERE c.status = 'Active'
+      AND (c.assigned_user_id = ? OR o.class_id IS NOT NULL)
+");
+$classStmt->execute([$view_user_id, $view_user_id]);
+$classes = $classStmt->fetchAll(PDO::FETCH_ASSOC);
+$classIds = array_map(static fn($class) => (int)$class['id'], $classes);
+$classPlaceholders = !empty($classIds) ? implode(',', array_fill(0, count($classIds), '?')) : '';
 
-// Lấy toàn bộ lịch sử đổi lịch/bỏ buổi thủ công
-$overrideRows = $db->query("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides")->fetchAll(PDO::FETCH_ASSOC);
+// Lấy lịch sử đổi lịch/bỏ buổi theo các lớp liên quan.
+$overrideRows = [];
+if (!empty($classIds)) {
+    $overrideStmt = $db->prepare("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides WHERE class_id IN ($classPlaceholders)");
+    $overrideStmt->execute($classIds);
+    $overrideRows = $overrideStmt->fetchAll(PDO::FETCH_ASSOC);
+}
 
 $weekSchedule = [];
 $monthPreview = [];
 $usersQuery = $db->query("SELECT id, username, full_name FROM users")->fetchAll(PDO::FETCH_ASSOC);
 $userMap = []; foreach ($usersQuery as $u) { $userMap[$u['id']] = $u['full_name'] ?: $u['username']; }
-$studentCountRows = $db->query("SELECT class_id, COUNT(*) AS total FROM student_class GROUP BY class_id")->fetchAll(PDO::FETCH_ASSOC);
+$studentCountRows = [];
+if (!empty($classIds)) {
+    $studentCountStmt = $db->prepare("SELECT class_id, COUNT(*) AS total FROM student_class WHERE class_id IN ($classPlaceholders) GROUP BY class_id");
+    $studentCountStmt->execute($classIds);
+    $studentCountRows = $studentCountStmt->fetchAll(PDO::FETCH_ASSOC);
+}
 $studentCountMap = [];
 foreach ($studentCountRows as $row) {
     $studentCountMap[(int)$row['class_id']] = (int)$row['total'];
@@ -83,13 +105,7 @@ foreach ($classes as $class) {
             }
         }
 
-        $slotCode = null;
-        foreach ($slotCodes as $code) {
-            if (strpos($displaySlot, $code) === 0) {
-                $slotCode = $code;
-                break;
-            }
-        }
+        $slotCode = extractTeachingSlotCode($displaySlot, $slotsData);
         
         $teacherName = $userMap[$sessionInfo['assigned_user_id']] ?? '';
         $studentCount = $studentCountMap[(int)$class['id']] ?? 0;
@@ -98,6 +114,9 @@ foreach ($classes as $class) {
             'time' => $displaySlot, 
             'slot_code' => $slotCode, 
             'class_id' => $class['id'],
+            'original_date' => $sessionInfo['original_date'],
+            'display_date' => $displayDate,
+            'assigned_user_id' => (int)$sessionInfo['assigned_user_id'],
             'teacher' => $teacherName,
             'student_count' => $studentCount
         ];
@@ -107,6 +126,9 @@ foreach ($classes as $class) {
             'time' => $displaySlot, 
             'slot_code' => $slotCode, 
             'class_id' => $class['id'],
+            'original_date' => $sessionInfo['original_date'],
+            'display_date' => $displayDate,
+            'assigned_user_id' => (int)$sessionInfo['assigned_user_id'],
             'teacher' => $teacherName,
             'student_count' => $studentCount
         ];

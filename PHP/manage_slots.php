@@ -43,7 +43,10 @@ $slots = $db->query('SELECT * FROM teaching_slots ORDER BY start_time, slot_code
 <head>
     <meta charset="UTF-8">
     <title>Quản lý ca dạy</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"></noscript>
     <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
 </head>
 <body>

@@ -58,11 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_attendance_class
             $studentId = (int)$studentId;
             $status = $status === 'Absent' ? 'Absent' : 'Present';
 
-            $db->prepare("DELETE FROM attendance WHERE class_id = ? AND student_id = ? AND attendance_date = ?")
-               ->execute([$selectedClassId, $studentId, $attendanceDate]);
-
-            $stmt = $db->prepare("INSERT INTO attendance (class_id, student_id, attendance_date, slot_time, status) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$selectedClassId, $studentId, $attendanceDate, $slotTime, $status]);
+            saveAttendanceRecord($db, $selectedClassId, $studentId, $attendanceDate, $slotTime, $status);
         }
 
         $message = "<p class='success'>Đã lưu điểm danh lớp ngày " . date('d/m/Y', strtotime($attendanceDate)) . " thành công.</p>";
@@ -71,8 +67,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_attendance_class
     }
 }
 
-$classes = $db->query("SELECT * FROM classes WHERE status = 'Active'")->fetchAll(PDO::FETCH_ASSOC);
-$overrideRows = $db->query("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides")->fetchAll(PDO::FETCH_ASSOC);
+$classStmt = $db->prepare("
+    SELECT DISTINCT c.*
+    FROM classes c
+    LEFT JOIN class_schedule_overrides o
+        ON o.class_id = c.id
+       AND o.action_type = 'move'
+       AND o.new_user_id = ?
+    WHERE c.status = 'Active'
+      AND (c.assigned_user_id = ? OR o.class_id IS NOT NULL)
+");
+$classStmt->execute([$currentUserId, $currentUserId]);
+$classes = $classStmt->fetchAll(PDO::FETCH_ASSOC);
+$classIds = array_map(static fn($class) => (int)$class['id'], $classes);
+$classPlaceholders = !empty($classIds) ? implode(',', array_fill(0, count($classIds), '?')) : '';
+
+$overrideRows = [];
+if (!empty($classIds)) {
+    $overrideStmt = $db->prepare("SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides WHERE class_id IN ($classPlaceholders)");
+    $overrideStmt->execute($classIds);
+    $overrideRows = $overrideStmt->fetchAll(PDO::FETCH_ASSOC);
+}
 $slotsDefinitions = getTeachingSlotOptions($db);
 $users = $db->query("SELECT id, username, full_name FROM users")->fetchAll(PDO::FETCH_ASSOC);
 
@@ -82,15 +97,21 @@ foreach ($users as $user) {
 }
 
 $studentCountByClass = [];
-foreach ($db->query("SELECT class_id, COUNT(*) AS total FROM student_class GROUP BY class_id") as $row) {
-    $studentCountByClass[(int)$row['class_id']] = (int)$row['total'];
+if (!empty($classIds)) {
+    $studentCountStmt = $db->prepare("SELECT class_id, COUNT(*) AS total FROM student_class WHERE class_id IN ($classPlaceholders) GROUP BY class_id");
+    $studentCountStmt->execute($classIds);
+    foreach ($studentCountStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $studentCountByClass[(int)$row['class_id']] = (int)$row['total'];
+    }
 }
 
 $attendanceCountByClass = [];
-$attendanceCountStmt = $db->prepare("SELECT class_id, COUNT(*) AS total FROM attendance WHERE attendance_date = ? GROUP BY class_id");
-$attendanceCountStmt->execute([$attendanceDate]);
-foreach ($attendanceCountStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-    $attendanceCountByClass[(int)$row['class_id']] = (int)$row['total'];
+if (!empty($classIds)) {
+    $attendanceCountStmt = $db->prepare("SELECT class_id, COUNT(*) AS total FROM attendance WHERE attendance_date = ? AND class_id IN ($classPlaceholders) GROUP BY class_id");
+    $attendanceCountStmt->execute(array_merge([$attendanceDate], $classIds));
+    foreach ($attendanceCountStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $attendanceCountByClass[(int)$row['class_id']] = (int)$row['total'];
+    }
 }
 
 $todayClasses = [];
@@ -98,13 +119,7 @@ foreach ($classes as $class) {
     $effectiveSessions = buildClassSessionDates($class, $overrideRows);
     foreach ($effectiveSessions as $session) {
         if ($session['display_date'] === $attendanceDate) {
-            $slotCode = 'Khác';
-            foreach ($slotsDefinitions as $slotItem) {
-                if (strpos($session['display_slot'], $slotItem['slot_code']) === 0) {
-                    $slotCode = $slotItem['slot_code'];
-                    break;
-                }
-            }
+            $slotCode = extractTeachingSlotCode($session['display_slot'], $slotsDefinitions) ?: 'Khác';
 
             $classId = (int)$class['id'];
             $assignedUserId = (int)($session['assigned_user_id'] ?? $class['assigned_user_id'] ?? 0);
@@ -168,7 +183,10 @@ if ($selectedClassInfo) {
 <head>
     <meta charset="UTF-8">
     <title>Điểm Danh Học Viên</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"></noscript>
     <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
     <style>
         .attendance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }

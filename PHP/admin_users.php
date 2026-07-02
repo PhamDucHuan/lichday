@@ -35,16 +35,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (isset($_POST['save_permissions'])) {
         $viewerId = (int)$_POST['viewer_id'];
-        $db->prepare('DELETE FROM user_view_permissions WHERE viewer_id = ?')->execute([$viewerId]);
-        if (!empty($_POST['viewed_user_ids']) && is_array($_POST['viewed_user_ids'])) {
-            $stmt = $db->prepare('INSERT IGNORE INTO user_view_permissions (viewer_id, viewed_user_id) VALUES (?, ?)');
-            foreach ($_POST['viewed_user_ids'] as $viewedUserId) {
-                $viewedUserId = (int)$viewedUserId;
-                if ($viewedUserId > 0 && $viewedUserId !== $viewerId) {
-                    $stmt->execute([$viewerId, $viewedUserId]);
-                }
-            }
-        }
+        $viewedUserIds = !empty($_POST['viewed_user_ids']) && is_array($_POST['viewed_user_ids'])
+            ? $_POST['viewed_user_ids']
+            : [];
+        syncUserViewPermissions($db, $viewerId, $viewedUserIds);
     }
 
     header('Location: admin_users.php');

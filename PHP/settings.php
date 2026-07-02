@@ -60,31 +60,45 @@ function downloadApSyncHtml(string $username, string $password): array {
             throw new RuntimeException('Đăng nhập AP thất bại: không nhận được cookie phiên.');
         }
 
-        $download = static function (string $url) use ($cookieFile, $sessionCookie): array {
-            $curl = curl_init($url);
-            curl_setopt_array($curl, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_COOKIEJAR => $cookieFile,
-                CURLOPT_COOKIEFILE => $cookieFile,
-                CURLOPT_COOKIE => $sessionCookie,
-                CURLOPT_CONNECTTIMEOUT => 15,
-                CURLOPT_TIMEOUT => 60,
-                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
-                CURLOPT_SSLVERSION => CURL_SSLVERSION_TLSv1_2,
-                CURLOPT_USERAGENT => 'curl/8.20.0',
-                CURLOPT_ENCODING => '',
-            ]);
-            $html = curl_exec($curl);
-            $error = curl_error($curl);
-            $status = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
-            curl_close($curl);
+        $requests = [
+            'classes' => 'https://ap.tinhoccantho.vn/admin_classes.php',
+            'students' => 'https://ap.tinhoccantho.vn/admin_students.php',
+            'progress' => 'https://ap.tinhoccantho.vn/admin_student_progress.php',
+            'slots_report' => 'https://ap.tinhoccantho.vn/admin_slots_report.php',
+        ];
+        $multi = curl_multi_init();
+        $handles = [];
+        foreach ($requests as $key => $url) {
+            $handle = apCreateDownloadCurl($url, $cookieFile, $sessionCookie, 60);
+            $handles[$key] = $handle;
+            curl_multi_add_handle($multi, $handle);
+        }
 
-            return [$html, $error, $status];
-        };
+        $running = null;
+        do {
+            $multiStatus = curl_multi_exec($multi, $running);
+            if ($running > 0) {
+                if (curl_multi_select($multi, 1.0) === -1) {
+                    usleep(100000);
+                }
+            }
+        } while ($running > 0 && $multiStatus === CURLM_OK);
 
-        [$html, $classesError, $classesStatus] = $download('https://ap.tinhoccantho.vn/admin_classes.php');
+        $responses = [];
+        foreach ($handles as $key => $handle) {
+            $responses[$key] = [
+                'html' => curl_multi_getcontent($handle),
+                'error' => curl_error($handle),
+                'status' => (int)curl_getinfo($handle, CURLINFO_HTTP_CODE),
+            ];
+            curl_multi_remove_handle($multi, $handle);
+            curl_close($handle);
+        }
+        curl_multi_close($multi);
+
+        $html = $responses['classes']['html'];
+        $classesError = $responses['classes']['error'];
+        $classesStatus = $responses['classes']['status'];
 
         if ($html === false || $classesStatus >= 400) {
             throw new RuntimeException('Không tải được trang lớp AP: ' . ($classesError ?: 'HTTP ' . $classesStatus));
@@ -93,7 +107,9 @@ function downloadApSyncHtml(string $username, string $password): array {
             throw new RuntimeException('AP không trả về bảng lớp. Tài khoản có thể hết quyền hoặc mật khẩu đã đổi.');
         }
 
-        [$studentsHtml, $studentsError, $studentsStatus] = $download('https://ap.tinhoccantho.vn/admin_students.php');
+        $studentsHtml = $responses['students']['html'];
+        $studentsError = $responses['students']['error'];
+        $studentsStatus = $responses['students']['status'];
         if ($studentsHtml === false || $studentsStatus >= 400) {
             throw new RuntimeException('Khong tai duoc trang hoc vien AP: ' . ($studentsError ?: 'HTTP ' . $studentsStatus));
         }
@@ -101,7 +117,9 @@ function downloadApSyncHtml(string $username, string $password): array {
             throw new RuntimeException('AP khong tra ve bang hoc vien. Tai khoan co the het quyen hoac mat khau da doi.');
         }
 
-        [$progressHtml, $progressError, $progressStatus] = $download('https://ap.tinhoccantho.vn/admin_student_progress.php');
+        $progressHtml = $responses['progress']['html'];
+        $progressError = $responses['progress']['error'];
+        $progressStatus = $responses['progress']['status'];
         if ($progressHtml === false || $progressStatus >= 400) {
             throw new RuntimeException('Khong tai duoc trang tien do hoc vien AP: ' . ($progressError ?: 'HTTP ' . $progressStatus));
         }
@@ -109,7 +127,9 @@ function downloadApSyncHtml(string $username, string $password): array {
             throw new RuntimeException('AP khong tra ve bang tien do hoc vien. Tai khoan co the het quyen hoac mat khau da doi.');
         }
 
-        [$slotsReportHtml, $slotsReportError, $slotsReportStatus] = $download('https://ap.tinhoccantho.vn/admin_slots_report.php');
+        $slotsReportHtml = $responses['slots_report']['html'];
+        $slotsReportError = $responses['slots_report']['error'];
+        $slotsReportStatus = $responses['slots_report']['status'];
         if ($slotsReportHtml === false || $slotsReportStatus >= 400) {
             throw new RuntimeException('Khong tai duoc trang bao cao ca day AP: ' . ($slotsReportError ?: 'HTTP ' . $slotsReportStatus));
         }
@@ -234,16 +254,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $db->prepare('UPDATE users SET role = ?, status = ? WHERE id = ?')->execute([$role, $status, $targetUserId]);
                 }
 
-                $db->prepare('DELETE FROM user_view_permissions WHERE viewer_id = ?')->execute([$targetUserId]);
-                if (!empty($_POST['viewed_user_ids']) && is_array($_POST['viewed_user_ids'])) {
-                    $insertPermission = $db->prepare('INSERT IGNORE INTO user_view_permissions (viewer_id, viewed_user_id) VALUES (?, ?)');
-                    foreach ($_POST['viewed_user_ids'] as $viewedUserId) {
-                        $viewedUserId = (int)$viewedUserId;
-                        if ($viewedUserId > 0 && $viewedUserId !== $targetUserId) {
-                            $insertPermission->execute([$targetUserId, $viewedUserId]);
-                        }
-                    }
-                }
+                $viewedUserIds = !empty($_POST['viewed_user_ids']) && is_array($_POST['viewed_user_ids'])
+                    ? $_POST['viewed_user_ids']
+                    : [];
+                syncUserViewPermissions($db, $targetUserId, $viewedUserIds);
 
                 $message = 'Đã lưu quyền cho tài khoản ' . $targetUser['username'] . '.';
             }
@@ -277,7 +291,10 @@ if (($_SESSION['role'] ?? '') === 'admin') {
 <head>
     <meta charset="UTF-8">
     <title>Cài đặt tài khoản</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"></noscript>
     <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
 </head>
 <body>

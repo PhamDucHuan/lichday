@@ -10,6 +10,7 @@ $studentsHtmlPath = $inputPaths[1] ?? null;
 $progressHtmlPath = $inputPaths[2] ?? null;
 $slotsReportHtmlPath = $inputPaths[3] ?? null;
 $centerScheduleHtmlPath = $inputPaths[4] ?? null;
+$progressDetailsPath = $inputPaths[5] ?? null;
 
 if (!is_file($htmlPath)) {
     fwrite(STDERR, "Không tìm thấy file HTML nguồn: {$htmlPath}\n");
@@ -47,6 +48,38 @@ if ($progressHtmlPath !== null) {
     if ($progressHtml === false || trim($progressHtml) === '') {
         fwrite(STDERR, "File HTML tien do hoc vien rong hoac khong doc duoc.\n");
         exit(1);
+    }
+}
+
+$progressDetailHtmlByClassId = [];
+$progressDetailDownloadErrors = [];
+if ($progressDetailsPath !== null) {
+    if (!is_file($progressDetailsPath)) {
+        fwrite(STDERR, "Khong tim thay file HTML tien do chi tiet hoc vien: {$progressDetailsPath}\n");
+        exit(1);
+    }
+
+    $progressDetailsJson = file_get_contents($progressDetailsPath);
+    if ($progressDetailsJson === false || trim($progressDetailsJson) === '') {
+        fwrite(STDERR, "File HTML tien do chi tiet hoc vien rong hoac khong doc duoc.\n");
+        exit(1);
+    }
+    $decodedProgressDetails = json_decode($progressDetailsJson, true);
+    if (!is_array($decodedProgressDetails)) {
+        fwrite(STDERR, "File HTML tien do chi tiet hoc vien khong dung dinh dang JSON.\n");
+        exit(1);
+    }
+    if (isset($decodedProgressDetails['details']) && is_array($decodedProgressDetails['details'])) {
+        $progressDetailDownloadErrors = isset($decodedProgressDetails['errors']) && is_array($decodedProgressDetails['errors'])
+            ? $decodedProgressDetails['errors']
+            : [];
+        $decodedProgressDetails = $decodedProgressDetails['details'];
+    }
+
+    foreach ($decodedProgressDetails as $classId => $detailHtml) {
+        if (is_string($detailHtml) && trim($detailHtml) !== '') {
+            $progressDetailHtmlByClassId[(int)$classId] = $detailHtml;
+        }
     }
 }
 
@@ -343,25 +376,53 @@ function loadClassOverrides(PDO $db, int $classId): array {
 }
 
 function classOverridesHaveChanges(PDO $db, int $classId, array $expectedRows): bool {
-    return loadClassOverrides($db, $classId) !== $expectedRows;
+    $existingRowsByDate = [];
+    foreach (loadClassOverrides($db, $classId) as $row) {
+        $existingRowsByDate[(string)$row['override_date']] = $row;
+    }
+
+    foreach ($expectedRows as $expectedRow) {
+        $overrideDate = (string)($expectedRow['override_date'] ?? '');
+        if ($overrideDate === '') {
+            continue;
+        }
+
+        $existingRow = $existingRowsByDate[$overrideDate] ?? null;
+        if (!$existingRow) {
+            return true;
+        }
+
+        $normalizedExpected = [
+            'override_date' => normalizeComparableValue($expectedRow['override_date'] ?? ''),
+            'new_date' => normalizeComparableValue($expectedRow['new_date'] ?? ''),
+            'new_slot' => normalizeComparableValue($expectedRow['new_slot'] ?? ''),
+            'new_user_id' => (int)($expectedRow['new_user_id'] ?? 0),
+            'action_type' => normalizeComparableValue($expectedRow['action_type'] ?? ''),
+        ];
+
+        if ($existingRow !== $normalizedExpected) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function replaceClassOverrides(PDO $db, int $classId, array $expectedRows): void {
-    $db->prepare("DELETE FROM class_schedule_overrides WHERE class_id = ?")->execute([$classId]);
     if (empty($expectedRows)) {
         return;
     }
 
-    $override = $db->prepare("INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type) VALUES (?, ?, ?, ?, ?, ?)");
     foreach ($expectedRows as $row) {
-        $override->execute([
+        saveClassScheduleOverride(
+            $db,
             $classId,
-            $row['override_date'],
-            $row['new_date'],
-            $row['new_slot'],
-            $row['new_user_id'],
-            $row['action_type'],
-        ]);
+            (string)$row['override_date'],
+            (string)($row['new_date'] ?? '') ?: null,
+            (string)($row['new_slot'] ?? '') ?: null,
+            (int)($row['new_user_id'] ?? 0) ?: null,
+            (string)$row['action_type']
+        );
     }
 }
 
@@ -507,7 +568,7 @@ function parseProgressRowsFromHtml(string $progressHtml): array {
                 $href = (string)$link->getAttribute('href');
                 $classIdMatch = [];
                 if (preg_match('/class_id=([0-9]+)/', $href, $classIdMatch) && isset($classIdMatch[1])) {
-                    $sourceClassId = (int)$classIdMatch[1];
+            $sourceClassId = (int)$classIdMatch[1];
                 }
             }
         }
@@ -530,6 +591,26 @@ function parseProgressRowsFromHtml(string $progressHtml): array {
             $progressPercent = (int)round(($studiedSessions / $totalSessions) * 100);
         }
 
+        $attendedSessions = [];
+        for ($i = 7; $i < $tds->length; $i++) {
+            $cellText = cleanTextValue($tds->item($i)->textContent ?? '');
+            if ($cellText === '') {
+                continue;
+            }
+            if (!preg_match_all('/(\d{1,2})\/(\d{1,2})\/(\d{4})/u', $cellText, $dateMatches, PREG_SET_ORDER)) {
+                continue;
+            }
+            foreach ($dateMatches as $dateMatch) {
+                $day = str_pad($dateMatch[1], 2, '0', STR_PAD_LEFT);
+                $month = str_pad($dateMatch[2], 2, '0', STR_PAD_LEFT);
+                $date = $dateMatch[3] . '-' . $month . '-' . $day;
+                $attendedSessions[$date] = [
+                    'date' => $date,
+                    'slot' => $slotCode,
+                ];
+            }
+        }
+
         $rows[] = [
             'student_name' => $studentName,
             'phone' => $phone,
@@ -540,10 +621,244 @@ function parseProgressRowsFromHtml(string $progressHtml): array {
             'studied_sessions' => $studiedSessions,
             'total_sessions' => $totalSessions,
             'progress_percent' => $progressPercent,
+            'attended_sessions' => array_values($attendedSessions),
         ];
     }
 
     return $rows;
+}
+
+function extractProgressDatesFromText(string $text, string $slotCode = '', bool $allowMissingYear = false, ?int $defaultYear = null): array {
+    $sessions = [];
+    $pattern = $allowMissingYear
+        ? '/(?<!\d)(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?(?!\d)/u'
+        : '/(?<!\d)(\d{1,2})\/(\d{1,2})\/(\d{4})(?!\d)/u';
+    if (!preg_match_all($pattern, $text, $dateMatches, PREG_SET_ORDER)) {
+        return $sessions;
+    }
+
+    $defaultYear = $defaultYear ?: (int)date('Y');
+    foreach ($dateMatches as $dateMatch) {
+        $dayNumber = (int)$dateMatch[1];
+        $monthNumber = (int)$dateMatch[2];
+        $yearNumber = isset($dateMatch[3]) && $dateMatch[3] !== '' ? (int)$dateMatch[3] : $defaultYear;
+        if (!checkdate($monthNumber, $dayNumber, $yearNumber)) {
+            continue;
+        }
+
+        $day = str_pad((string)$dayNumber, 2, '0', STR_PAD_LEFT);
+        $month = str_pad((string)$monthNumber, 2, '0', STR_PAD_LEFT);
+        $date = $yearNumber . '-' . $month . '-' . $day;
+        $sessions[$date] = [
+            'date' => $date,
+            'slot' => $slotCode,
+        ];
+    }
+
+    return $sessions;
+}
+
+function getProgressRowCells(DOMXPath $xpath, DOMNode $row): array {
+    $cells = [];
+    foreach ($xpath->query('./th|./td', $row) as $cell) {
+        if ($cell instanceof DOMElement) {
+            $cells[] = $cell;
+        }
+    }
+    return $cells;
+}
+
+function progressCellLooksLikePresent(DOMElement $cell): bool {
+    $text = cleanTextValue($cell->textContent ?? '');
+    $className = strtolower((string)$cell->getAttribute('class'));
+    $title = strtolower((string)$cell->getAttribute('title'));
+
+    if (preg_match('/vang|absent|nghi|chua|chưa|khong|không|none|danger|secondary/u', $text . ' ' . $className . ' ' . $title)) {
+        return false;
+    }
+
+    if ($text !== '' && $text !== '-' && $text !== '0') {
+        return true;
+    }
+
+    if (preg_match('/present|success|checked|attended|co-hoc|có học/u', $className . ' ' . $title)) {
+        return true;
+    }
+
+    $html = strtolower($cell->ownerDocument ? $cell->ownerDocument->saveHTML($cell) : '');
+    return strpos($html, 'fa-check') !== false || strpos($html, 'glyphicon-ok') !== false || strpos($html, 'checked') !== false;
+}
+
+function extractProgressDatesFromCellText(string $text, string $slotCode, int $defaultYear): array {
+    $sessions = [];
+    foreach (extractProgressDatesFromText($text, $slotCode, false, $defaultYear) as $date => $session) {
+        $sessions[$date] = $session;
+    }
+
+    $trimmed = trim($text);
+    if (!preg_match('/^\d+\s*\/\s*\d+$/', $trimmed)) {
+        foreach (extractProgressDatesFromText($text, $slotCode, true, $defaultYear) as $date => $session) {
+            $sessions[$date] = $session;
+        }
+    }
+
+    return $sessions;
+}
+
+function extractProgressDatesFromSessionCellText(string $text, string $slotCode, int $defaultYear): array {
+    $sessions = [];
+    foreach (extractProgressDatesFromText($text, $slotCode, false, $defaultYear) as $date => $session) {
+        $sessions[$date] = $session;
+    }
+    foreach (extractProgressDatesFromText($text, $slotCode, true, $defaultYear) as $date => $session) {
+        $sessions[$date] = $session;
+    }
+    return $sessions;
+}
+
+function progressCellLooksLikeTotal(string $text, int $index, int $cellCount): bool {
+    $text = trim($text);
+    if ($index !== $cellCount - 1) {
+        return false;
+    }
+    return (bool)preg_match('/^\d+\s*\/\s*\d+$/', $text);
+}
+
+function parseProgressDetailRowsFromHtml(string $detailHtml, int $sourceClassId): array {
+    $xpath = htmlToDomXPath($detailHtml);
+    $rows = [];
+    $defaultYear = (int)date('Y');
+
+    foreach ($xpath->query('//table') as $table) {
+        $headerDatesByIndex = [];
+        $headerSlotsByIndex = [];
+        foreach ($xpath->query('.//thead/tr|.//tr[th]', $table) as $headerRow) {
+            foreach (getProgressRowCells($xpath, $headerRow) as $index => $cell) {
+                $cellText = cleanTextValue($cell->textContent ?? '');
+                $dates = extractProgressDatesFromCellText($cellText, '', $defaultYear);
+                if (count($dates) === 1) {
+                    $headerDatesByIndex[$index] = reset($dates);
+                }
+                if (preg_match('/^B\d+$/i', $cellText)) {
+                    $headerSlotsByIndex[$index] = strtoupper($cellText);
+                }
+            }
+        }
+
+        foreach ($xpath->query('.//tr', $table) as $tr) {
+            $tds = $xpath->query('./td', $tr);
+            if ($tds->length < 2) {
+                continue;
+            }
+
+            $cells = [];
+            foreach ($tds as $cell) {
+                if ($cell instanceof DOMElement) {
+                    $cells[] = $cell;
+                }
+            }
+            $studentName = '';
+            $phone = '';
+            $identityIndexes = [];
+            if (isset($cells[0])) {
+                $firstCellText = cleanTextValue($cells[0]->textContent ?? '');
+                if ($firstCellText !== '' && preg_match('/[^\W\d_]/u', $firstCellText)) {
+                    $studentName = $firstCellText;
+                    $identityIndexes[0] = true;
+                }
+            }
+            if (isset($cells[1])) {
+                $phone = cleanPhoneValue($cells[1]->textContent ?? '');
+                $identityIndexes[1] = true;
+            }
+
+            foreach ($cells as $index => $cell) {
+                $cellText = cleanTextValue($cell->textContent ?? '');
+                if ($cellText === '') {
+                    continue;
+                }
+
+                $candidatePhone = cleanPhoneValue($cellText);
+                if ($phone === '' && strlen($candidatePhone) >= 8) {
+                    $phone = $candidatePhone;
+                    $identityIndexes[$index] = true;
+                    continue;
+                }
+
+                if ($studentName === ''
+                    && preg_match('/[^\W\d_]/u', $cellText)
+                    && !preg_match('/\d{1,2}\/\d{1,2}/', $cellText)
+                    && !preg_match('/%|@|ca\s*\d|bu[oổ]i|l[oớ]p|gi[aá]o|t[oổ]ng|ti[eế]n|phone|sdt|sđt/i', $cellText)
+                ) {
+                    $studentName = $cellText;
+                    $identityIndexes[$index] = true;
+                }
+            }
+
+            if ($studentName === '') {
+                continue;
+            }
+
+            $attendedSessions = [];
+            foreach ($cells as $index => $cell) {
+                if (isset($identityIndexes[$index])) {
+                    continue;
+                }
+
+                $cellText = cleanTextValue($cell->textContent ?? '');
+                if (progressCellLooksLikeTotal($cellText, $index, count($cells))) {
+                    continue;
+                }
+
+                $slotCode = $headerSlotsByIndex[$index] ?? ('B' . max(1, $index - 1));
+                if ($cellText !== '' && $cellText !== '-') {
+                    foreach (extractProgressDatesFromSessionCellText($cellText, $slotCode, $defaultYear) as $session) {
+                        $sessionKey = (string)($session['date'] ?? '') . '|' . (string)($session['slot'] ?? '');
+                        $attendedSessions[$sessionKey] = $session;
+                    }
+                }
+
+                if (isset($headerDatesByIndex[$index]) && progressCellLooksLikePresent($cell)) {
+                    $date = (string)$headerDatesByIndex[$index]['date'];
+                    $headerDatesByIndex[$index]['slot'] = $slotCode;
+                    $attendedSessions[$date . '|' . $slotCode] = $headerDatesByIndex[$index];
+                }
+            }
+
+            if (empty($attendedSessions)) {
+                $fullText = cleanTextValue($tr->textContent ?? '');
+                foreach (extractProgressDatesFromText($fullText, '', false, $defaultYear) as $session) {
+                    $sessionKey = (string)($session['date'] ?? '') . '|' . (string)($session['slot'] ?? '');
+                    $attendedSessions[$sessionKey] = $session;
+                }
+            }
+
+            if (empty($attendedSessions)) {
+                continue;
+            }
+
+            $rows[normalizeStudentKey($studentName)] = [
+                'student_name' => $studentName,
+                'phone' => $phone,
+                'source_class_id' => $sourceClassId,
+                'attended_sessions' => array_values($attendedSessions),
+            ];
+        }
+    }
+
+    return $rows;
+}
+
+function buildProgressDetailMap(array $detailHtmlByClassId): array {
+    $detailMap = [];
+    foreach ($detailHtmlByClassId as $sourceClassId => $detailHtml) {
+        $sourceClassId = (int)$sourceClassId;
+        foreach (parseProgressDetailRowsFromHtml((string)$detailHtml, $sourceClassId) as $studentKey => $row) {
+            $detailMap[$sourceClassId][$studentKey] = $row;
+        }
+    }
+
+    return $detailMap;
 }
 
 function buildLocalStudentNameMap(PDO $db): array {
@@ -568,27 +883,112 @@ function buildLocalClassNameMap(PDO $db): array {
     return $map;
 }
 
+function normalizeProgressSourceSessions(array $sourceSessions, int $studiedSessions): array {
+    $validSessions = [];
+    $seenDates = [];
+    foreach ($sourceSessions as $session) {
+        $date = (string)($session['date'] ?? '');
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            continue;
+        }
+        if (isset($seenDates[$date])) {
+            continue;
+        }
+        $seenDates[$date] = true;
+        $slot = trim((string)($session['slot'] ?? ''));
+        $validSessions[] = [
+            'date' => $date,
+            'slot' => $slot,
+        ];
+    }
+
+    if ($studiedSessions > 0 && count($validSessions) > $studiedSessions) {
+        $validSessions = array_slice($validSessions, 0, $studiedSessions);
+    }
+
+    return $validSessions;
+}
+
+function pruneApAttendanceSessions(PDO $db, int $classId, int $studentId, array $keptSessions): int {
+    $keepKeys = [];
+    $keepDates = [];
+    foreach ($keptSessions as $session) {
+        $keepKeys[(string)$session['date'] . '|' . (string)$session['slot']] = true;
+        $keepDates[(string)$session['date']] = true;
+    }
+
+    $stmt = $db->prepare("
+        SELECT id, attendance_date, slot_time
+        FROM attendance
+        WHERE class_id = ?
+          AND student_id = ?
+          AND status = 'Present'
+          AND slot_time REGEXP '^B[0-9]+$'
+    ");
+    $stmt->execute([$classId, $studentId]);
+
+    $deleteStmt = $db->prepare('DELETE FROM attendance WHERE id = ?');
+    $deleted = 0;
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $key = (string)$row['attendance_date'] . '|' . (string)$row['slot_time'];
+        $date = (string)$row['attendance_date'];
+        if (isset($keepKeys[$key]) && isset($keepDates[$date])) {
+            unset($keepDates[$date]);
+            continue;
+        }
+        $deleteStmt->execute([(int)$row['id']]);
+        $deleted++;
+    }
+
+    return $deleted;
+}
+
 function syncAttendanceFromProgress(PDO $db, array $studentProgress, array $class, bool $dryRun): array {
-    if (($class['class_type'] ?? 'fixed') === 'flexible') {
-        return ['inserted' => 0, 'existing' => 0, 'flexible_skipped' => 1];
-    }
-
     $studiedSessions = max(0, (int)$studentProgress['studied_sessions']);
-    if ($studiedSessions <= 0) {
-        return ['inserted' => 0, 'existing' => 0, 'flexible_skipped' => 0];
-    }
-
     $classId = (int)$class['id'];
     $studentId = (int)$studentProgress['student_id'];
+    $sourceSessions = $studentProgress['attended_sessions'] ?? [];
+    if ($studiedSessions <= 0 && (empty($sourceSessions) || !is_array($sourceSessions))) {
+        return ['inserted' => 0, 'existing' => 0, 'deleted' => 0, 'flexible_skipped' => 0];
+    }
+
+    $inserted = 0;
+    $existing = 0;
+    $deleted = 0;
+    if (!empty($sourceSessions) && is_array($sourceSessions)) {
+        $sourceSessions = normalizeProgressSourceSessions($sourceSessions, $studiedSessions);
+        foreach ($sourceSessions as $session) {
+            $date = (string)($session['date'] ?? '');
+            $slot = (string)($session['slot'] ?? ($studentProgress['slot_code'] ?? ($class['slot_time'] ?? '')));
+
+            if ($dryRun) {
+                $inserted++;
+                continue;
+            }
+
+            $saveMode = saveAttendanceRecord($db, $classId, $studentId, $date, $slot, 'Present');
+            if ($saveMode === 'updated') {
+                $existing++;
+                continue;
+            }
+
+            $inserted++;
+        }
+        if (!$dryRun) {
+            $deleted += pruneApAttendanceSessions($db, $classId, $studentId, $sourceSessions);
+        }
+
+        return ['inserted' => $inserted, 'existing' => $existing, 'deleted' => $deleted, 'flexible_skipped' => 0];
+    }
+
+    if (($class['class_type'] ?? 'fixed') === 'flexible') {
+        return ['inserted' => 0, 'existing' => 0, 'deleted' => 0, 'flexible_skipped' => 1];
+    }
+
     $overrideStmt = $db->prepare('SELECT class_id, override_date, new_date, new_slot, new_user_id, action_type FROM class_schedule_overrides WHERE class_id = ?');
     $overrideStmt->execute([$classId]);
     $sessions = buildClassSessionDates($class, $overrideStmt->fetchAll(PDO::FETCH_ASSOC));
 
-    $findAttendance = $db->prepare('SELECT id FROM attendance WHERE class_id = ? AND student_id = ? AND attendance_date = ? LIMIT 1');
-    $insertAttendance = $db->prepare("INSERT INTO attendance (class_id, student_id, attendance_date, slot_time, status) VALUES (?, ?, ?, ?, 'Present')");
-
-    $inserted = 0;
-    $existing = 0;
     $used = 0;
     foreach ($sessions as $session) {
         if ($used >= $studiedSessions) {
@@ -607,21 +1007,21 @@ function syncAttendanceFromProgress(PDO $db, array $studentProgress, array $clas
             continue;
         }
 
-        $findAttendance->execute([$classId, $studentId, $date]);
-        if ($findAttendance->fetchColumn()) {
+        $saveMode = saveAttendanceRecord($db, $classId, $studentId, $date, $slot, 'Present');
+        if ($saveMode === 'updated') {
             $existing++;
             continue;
         }
 
-        $insertAttendance->execute([$classId, $studentId, $date, $slot]);
         $inserted++;
     }
 
-    return ['inserted' => $inserted, 'existing' => $existing, 'flexible_skipped' => 0];
+    return ['inserted' => $inserted, 'existing' => $existing, 'deleted' => 0, 'flexible_skipped' => 0];
 }
 
-function importProgressFromSource(PDO $db, string $progressHtml, bool $dryRun): array {
+function importProgressFromSource(PDO $db, string $progressHtml, bool $dryRun, array $progressDetailHtmlByClassId = [], array $progressDetailDownloadErrors = []): array {
     $progressRows = parseProgressRowsFromHtml($progressHtml);
+    $progressDetailMap = buildProgressDetailMap($progressDetailHtmlByClassId);
     $studentsByName = buildLocalStudentNameMap($db);
     $classesByName = buildLocalClassNameMap($db);
 
@@ -646,6 +1046,7 @@ function importProgressFromSource(PDO $db, string $progressHtml, bool $dryRun): 
     $missingClasses = 0;
     $attendanceInserted = 0;
     $attendanceExisting = 0;
+    $attendanceDeleted = 0;
     $flexibleSkipped = 0;
 
     foreach ($progressRows as $row) {
@@ -663,6 +1064,12 @@ function importProgressFromSource(PDO $db, string $progressHtml, bool $dryRun): 
 
         $row['student_id'] = $studentId;
         $classId = (int)$class['id'];
+        $sourceClassId = (int)($row['source_class_id'] ?? 0);
+        $studentKey = normalizeStudentKey($row['student_name'] ?? '');
+        $detailRow = $progressDetailMap[$sourceClassId][$studentKey] ?? null;
+        if ($detailRow && !empty($detailRow['attended_sessions'])) {
+            $row['attended_sessions'] = $detailRow['attended_sessions'];
+        }
         $newProgress = [
             'source_class_name' => normalizeComparableValue($row['class_name']),
             'teacher_name' => normalizeComparableValue($row['teacher_name']),
@@ -704,17 +1111,22 @@ function importProgressFromSource(PDO $db, string $progressHtml, bool $dryRun): 
         $attendanceResult = syncAttendanceFromProgress($db, $row, $class, $dryRun);
         $attendanceInserted += $attendanceResult['inserted'];
         $attendanceExisting += $attendanceResult['existing'];
+        $attendanceDeleted += $attendanceResult['deleted'] ?? 0;
         $flexibleSkipped += $attendanceResult['flexible_skipped'];
     }
 
     return [
         'source_progress_rows' => count($progressRows),
+        'detail_class_pages' => count($progressDetailHtmlByClassId),
+        'detail_class_page_errors' => count($progressDetailDownloadErrors),
+        'detail_students_with_dates' => array_sum(array_map('count', $progressDetailMap)),
         'progress_upserted' => $upserted,
         'progress_unchanged' => $unchanged,
         'missing_students_by_name' => $missingStudents,
         'missing_classes_by_name' => $missingClasses,
         'fixed_attendance_inserted' => $attendanceInserted,
         'fixed_attendance_existing_skipped' => $attendanceExisting,
+        'attendance_reconciled_deleted' => $attendanceDeleted,
         'flexible_classes_skipped_auto_attendance' => $flexibleSkipped,
     ];
 }
@@ -1153,7 +1565,7 @@ try {
 
     $progressImportResult = [];
     if ($progressHtml !== '') {
-        $progressImportResult = importProgressFromSource($db, $progressHtml, $dryRun);
+        $progressImportResult = importProgressFromSource($db, $progressHtml, $dryRun, $progressDetailHtmlByClassId, $progressDetailDownloadErrors);
     }
 
     if (!$dryRun) {

@@ -15,13 +15,12 @@ $classId = (int)($_POST['class_id'] ?? 0);
 $sessionDate = trim($_POST['session_date'] ?? '');
 
 if ($action === 'delete') {
-    if ($classId <= 0 || !isValidDateString($sessionDate)) {
+    if ($classId <= 0 || $sessionDate === '') {
         jsonResponse(['success' => false, 'message' => 'Thieu hoac sai thong tin ngay hoc.'], 422);
     }
 
     $notificationContext = getScheduleNotificationContext($db, $classId, $sessionDate);
-    $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, action_type) VALUES (?, ?, ?)');
-    $stmt->execute([$classId, $sessionDate, 'delete']);
+    saveClassScheduleOverride($db, $classId, $sessionDate, null, null, null, 'delete');
     notifyScheduleChanged($db, 'delete', $notificationContext);
     jsonResponse(['success' => true, 'message' => 'Da xoa lich cua ngay nay va day cac buoi sau ve phia sau.']);
 }
@@ -31,7 +30,7 @@ if ($action === 'move') {
     $newSlot = trim($_POST['new_slot'] ?? '');
     $newUserChanges = isset($_POST['new_user_id']) ? (int)$_POST['new_user_id'] : 0;
 
-    if ($classId <= 0 || !isValidDateString($sessionDate) || !isValidDateString($newDate) || $newSlot === '') {
+    if ($classId <= 0 || $sessionDate === '' || !isValidDateString($newDate) || $newSlot === '') {
         jsonResponse(['success' => false, 'message' => 'Thieu hoac sai thong tin doi lich.'], 422);
     }
 
@@ -50,8 +49,7 @@ if ($action === 'move') {
     }
 
     $notificationContext = getScheduleNotificationContext($db, $classId, $sessionDate);
-    $stmt = $db->prepare('INSERT INTO class_schedule_overrides (class_id, override_date, new_date, new_slot, new_user_id, action_type) VALUES (?, ?, ?, ?, ?, ?)');
-    $stmt->execute([$classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move']);
+    saveClassScheduleOverride($db, $classId, $sessionDate, $newDate, $newSlot, $newUserChanges > 0 ? $newUserChanges : null, 'move');
     notifyScheduleChanged($db, 'move', $notificationContext, [
         'new_date' => $newDate,
         'new_slot' => $newSlot,

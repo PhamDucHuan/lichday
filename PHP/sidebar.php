@@ -24,6 +24,7 @@ $menuGroups = [
             ['file' => 'manage_students.php', 'href' => $appBase . '/PHP/manage_students.php', 'icon' => '👤', 'label' => 'Quản lý học viên'],
             ['file' => 'attendance.php', 'href' => $appBase . '/PHP/attendance.php', 'icon' => '✅', 'label' => 'Điểm danh học viên'],
             ['file' => 'student_stats.php', 'href' => $appBase . '/PHP/student_stats.php', 'icon' => '📊', 'label' => 'Thống kê học viên'],
+            ['file' => 'student_session_report.php', 'href' => $appBase . '/PHP/student_session_report.php', 'icon' => '📋', 'label' => 'Báo cáo buổi học'],
         ],
     ],
     [

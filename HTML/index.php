@@ -17,7 +17,10 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - Lịch Dạy Của Tôi</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"></noscript>
     <link rel="stylesheet" href="../CSS/style.css?v=sidebar-fix-3">
 </head>
 <body>
@@ -33,7 +36,7 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
                 <div id="class-student-details">
                     <div class="student-list-empty">Đang tải thông tin học viên...</div>
                 </div>
-                <form id="move-form" class="compact-form" style="display:none;">
+                <form id="move-form" class="compact-form">
                     <input type="hidden" id="panel-class-id" name="class_id">
                     <input type="hidden" id="panel-session-date" name="session_date">
                     <input type="hidden" name="action" value="move">
@@ -109,15 +112,17 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
             return escapeHtml(JSON.stringify(String(value ?? '')));
         }
 
-        function openActionPanel(classId, className, sessionDate) {
+        function openActionPanel(classId, className, originalDate, displayDate, slot, userId) {
             document.getElementById('panel-class-id').value = classId;
-            document.getElementById('panel-session-date').value = sessionDate;
+            document.getElementById('panel-session-date').value = originalDate;
             document.getElementById('panel-class-name').innerText = 'Danh sách học viên';
             document.getElementById('schedule-action-modal').style.display = 'flex';
             activeClassId = classId;
-            activeSessionDate = sessionDate;
-            document.getElementById('panel-new-date').value = sessionDate;
-            loadClassStudentDetails(classId, sessionDate);
+            activeSessionDate = originalDate;
+            document.getElementById('panel-new-date').value = displayDate || '';
+            document.getElementById('panel-new-slot').value = slot || '';
+            document.getElementById('panel-new-user').value = userId || "0";
+            loadClassStudentDetails(classId, displayDate || originalDate);
         }
 
         function closeActionPanel() {
@@ -213,7 +218,7 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
                         if (matchedSessions.length > 0) {
                             matchedSessions.forEach(session => {
                                 cellContent += `
-                                    <div class="session-card" data-class-id="${escapeHtml(session.class_id || '')}" style="cursor:pointer; margin-bottom: 6px;" onclick='openActionPanel(${jsArg(session.class_id || '')}, ${jsArg(session.name)}, ${jsArg(item.date_raw)})'>
+                                    <div class="session-card" data-class-id="${escapeHtml(session.class_id || '')}" style="cursor:pointer; margin-bottom: 6px;" onclick='openActionPanel(${jsArg(session.class_id || '')}, ${jsArg(session.name)}, ${jsArg(session.original_date || item.date_raw)}, ${jsArg(session.display_date || item.date_raw)}, ${jsArg(session.time || '')}, ${jsArg(session.assigned_user_id || '0')})'>
                                         <div class="class-name">${escapeHtml(session.teacher || 'Chưa gán')}</div>
                                         <div class="class-time">${escapeHtml(session.name)}</div>
                                         <div class="class-meta">Dự kiến: ${escapeHtml(session.student_count ?? 0)} HV</div>
@@ -242,7 +247,7 @@ $usersList = $db->query("SELECT id, username, full_name FROM users WHERE status=
         document.getElementById('move-form').addEventListener('submit', async function(e) {
             e.preventDefault();
             const formData = new FormData(this);
-            formData.append('session_date', activeSessionDate || '');
+            formData.set('session_date', activeSessionDate || '');
             const response = await fetch('../PHP/schedule_actions.php', { method: 'POST', body: formData });
             const result = await response.json();
             alert(result.message || 'Đã xử lý');

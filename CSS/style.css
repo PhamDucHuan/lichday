@@ -695,6 +695,209 @@ body.login-page {
     box-sizing: border-box;
 }
 
+.report-page-subtitle {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+.report-filter-card {
+    margin-bottom: 24px;
+}
+.report-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: end;
+}
+.report-filter-field {
+    flex: 1;
+    min-width: 260px;
+}
+.report-filter-field-search {
+    min-width: 240px;
+}
+.report-sync-form {
+    margin-top: 12px;
+}
+.btn-teal {
+    background: #0f766e;
+}
+.btn-slate {
+    background: #1e293b;
+}
+.btn-light {
+    background: #f8fafc;
+    border: 1px solid var(--border-color);
+    box-shadow: none;
+    color: var(--text-main);
+}
+.report-table-wrap {
+    overflow: auto;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: #fff;
+    box-shadow: var(--shadow-sm);
+}
+.session-report-table {
+    min-width: 880px;
+    width: 100%;
+    border-collapse: collapse;
+}
+.session-report-table th {
+    position: sticky;
+    top: 0;
+    background: #2f6f5b;
+    color: #fff;
+    padding: 10px;
+    white-space: nowrap;
+    font-size: 0.85rem;
+}
+.session-report-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border-color);
+    white-space: nowrap;
+    font-size: 0.88rem;
+}
+.class-row td {
+    background: #e0f2fe;
+    color: #0f172a;
+    font-weight: 800;
+}
+.present-cell {
+    color: #047857;
+    font-weight: 700;
+}
+.absent-cell {
+    color: #b91c1c;
+    font-weight: 700;
+}
+.report-empty-cell {
+    text-align: center;
+    padding: 28px;
+    color: var(--text-muted);
+}
+.student-detail-btn {
+    border: 0;
+    background: transparent;
+    color: #0f766e;
+    font: inherit;
+    font-weight: 800;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+}
+.student-detail-btn:hover {
+    text-decoration: underline;
+}
+.report-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.48);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    z-index: 1000;
+}
+.report-modal-backdrop.is-open {
+    display: flex;
+}
+.report-modal {
+    width: min(620px, 100%);
+    max-height: 88vh;
+    overflow: auto;
+    background: #fff;
+    border-radius: var(--radius-md);
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
+    border: 1px solid var(--border-color);
+}
+.report-modal-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    align-items: flex-start;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+.report-modal-title {
+    margin: 0;
+    color: var(--text-main);
+    font-size: 1.1rem;
+}
+.report-modal-subtitle {
+    margin: 5px 0 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+.report-modal-close {
+    border: 1px solid var(--border-color);
+    background: #fff;
+    border-radius: 999px;
+    width: 34px;
+    height: 34px;
+    cursor: pointer;
+    font-size: 1.2rem;
+    line-height: 1;
+}
+.report-modal-body {
+    padding: 18px 20px 20px;
+}
+.export-modal-form {
+    display: grid;
+    gap: 14px;
+}
+.export-modal-form select {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: #fff;
+}
+.export-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+.session-detail-list {
+    display: grid;
+    gap: 9px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.session-detail-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: #f8fafc;
+}
+.session-detail-date {
+    font-weight: 800;
+    color: var(--text-main);
+}
+.session-detail-slot {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    text-align: right;
+}
+.session-detail-source {
+    display: inline-flex;
+    margin-top: 4px;
+    color: #0f766e;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+.session-detail-empty {
+    margin: 0;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
 /* Giới hạn và ẩn phần text ca dạy bị dài */
 .admin-table td:nth-child(6) {
     max-width: 180px;            /* Chiều rộng tối đa của cột Giờ Dạy */
@@ -770,6 +973,25 @@ body.login-page {
     .admin-table,
     .admin-list {
         min-width: 760px;
+    }
+
+    .session-report-table {
+        min-width: 720px;
+    }
+
+    .report-modal-header,
+    .report-modal-body {
+        padding-left: 16px;
+        padding-right: 16px;
+    }
+
+    .session-detail-item {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .session-detail-slot {
+        text-align: left;
     }
 
     .modal {
